@@ -57,17 +57,32 @@ if (!TOKEN) {
 // ───────────────────────────────────────────────────────────────
 // CONFIGURACIÓN DE PERSONALIDAD & MEMORIA
 // ───────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, un compa mexicano que está en el canal de voz de Discord jugando con sus amigos del gremio Noxz en Aion 2.
-Personalidad y estilo:
-- Eres el compa chistoso, sarcástico, a veces mamoncito y pesado, pero en el fondo leal a la banda.
-- Conoces muy bien Aion 2 (Gladiador, Hechicero, Ranger, Espiritualista, builds, mazmorras, estigmas, Daevanion, PvP y PvE).
-- Les tiras carrilla y bromas a tus amigos, a veces sales con mamadas o respuestas inesperadas y graciosas.
-- Usas modismos mexicanos naturales (wey, no mames, qué pedo, Simón, al chile, cabrón, etc.) sin exagerar ni sonar fingido.
-- REGLA DE ORO: Tus respuestas serán leídas en voz alta en Discord. Responde CORTO y DIRECTO (1 a 2 oraciones máximo, como en una plática real). NUNCA uses listas, asteriscos, negritas ni viñetas.`;
+const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, un jugador mexicano de Aion 2 en Discord platicando por voz con tus amigos del gremio Noxz.
+
+PERSONALIDAD Y ESTILO:
+- Eres el compa carrilludo, bromista, sarcástico y alivianado. Conoces Aion 2 muy bien (clases como Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss y dungeons).
+- Hablas con acento mexicano natural y jerga gamer (wey, no mames, carnal, paro, qué pedo, chela, manco, chido), pero VARÍAS tu vocabulario.
+
+REGLAS ESTRICTAS DE CONVERSACIÓN:
+1. Responde DIRECTO y con sustancia a la pregunta o tema que te están diciendo. Si te preguntan algo de builds, mecánicas o del juego, respóndeles la neta con carrilla.
+2. PROHIBIDO repetir siempre las mismas muletillas como "Simón", "Al tiro" o "De nada". Habla de forma natural y variada.
+3. Máximo 1 o 2 oraciones cortas (se lee en voz alta en Discord). NUNCA uses viñetas, negritas, asteriscos ni listas.`;
 
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // false = solo responde si dicen 'pepe' o usan /decir; true = escucha todo
 let botHablando = false; // anti-eco
+
+// Filtro de alucinaciones típicas que Whisper genera cuando hay silencio o estática
+const FANTASMAS_WHISPER = [
+  'gracias', 'muchas gracias', 'de nada', 'subtítulos', 'subtitulos',
+  'amara.org', 'suscríbete', 'suscribete', 'bye', 'thank you', 'you',
+  'chau', 'adiós', 'adios'
+];
+
+function esAlucinacionWhisper(texto) {
+  const limpio = texto.toLowerCase().replace(/[^a-záéíóúñ]/g, '').trim();
+  return FANTASMAS_WHISPER.includes(limpio);
+}
 
 // ───────────────────────────────────────────────────────────────
 // 1. MINI SERVIDOR WEB KEEP-ALIVE (Render.com + UptimeRobot)
@@ -200,10 +215,12 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
         'User-Agent': 'Mozilla/5.0'
       },
       body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
+        model: 'qwen/qwen3.8-27b',
         messages,
-        max_tokens: 120,
-        temperature: 0.85
+        max_tokens: 130,
+        temperature: 0.85,
+        frequency_penalty: 0.7,
+        presence_penalty: 0.5
       })
     });
 
@@ -213,7 +230,13 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     }
 
     const data = await res.json();
-    let respuesta = data.choices?.[0]?.message?.content?.trim() || 'Simón.';
+    let respuesta = data.choices?.[0]?.message?.content?.trim();
+
+    if (!respuesta || respuesta.length < 2) {
+      console.warn('⚠️ Respuesta de Groq vacía, usando fallback natural.');
+      respuesta = 'No te alcancé a escuchar bien carnal, ¿qué decías?';
+    }
+
     // Limpieza de caracteres no hablables
     respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
 
@@ -401,6 +424,11 @@ function configurarEscucha(connection) {
           return;
         }
 
+        if (esAlucinacionWhisper(texto)) {
+          console.log(`🔇 [Whisper Filtro] Descartada alucinación de silencio/fondo: "${texto}"`);
+          return;
+        }
+
         console.log(`👂 [${username} dijo]: "${texto}"`);
 
         const esParaPepe = texto.toLowerCase().includes('pepe');
@@ -565,9 +593,9 @@ client.on('interactionCreate', async (interaction) => {
     modoCharlaContinua = (modo === 'on');
 
     if (modoCharlaContinua) {
-      reproducirEnCanal('Qué onda banda, ya ando al tiro, los escucho.');
+      reproducirEnCanal('Qué onda banda, modo charla continua activado. Platíquenme qué andan haciendo.');
     } else {
-      reproducirEnCanal('Simón compas, me pongo en modo tranquilo. Si me ocupan, nada más digan Pepe.');
+      reproducirEnCanal('Cámara gente, me pongo en modo tranquilo. Si me ocupan, nada más háblenme por mi nombre Pepe.');
     }
 
     const embed = new EmbedBuilder()
