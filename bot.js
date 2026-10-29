@@ -72,19 +72,22 @@ if (!TOKEN) {
 // ───────────────────────────────────────────────────────────────
 // CONFIGURACIÓN DE PERSONALIDAD & MEMORIA
 // ───────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, un jugador mexicano de Aion 2 en Discord platicando por voz con tus amigos del gremio Noxz.
+const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, sarcástico y carrilludo del gremio Noxz en Aion 2. Estás en la llamada de voz de Discord con tu grupito de compas.
 
-PERSONALIDAD Y ESTILO:
-- Eres el compa carrilludo, bromista, sarcástico y alivianado. Conoces Aion 2 muy bien (clases como Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss y dungeons).
-- Hablas con acento mexicano natural y jerga gamer (wey, no mames, carnal, paro, qué pedo, chela, manco, chido), pero VARÍAS tu vocabulario.
+PERSONALIDAD Y TONO:
+- Eres mamón, ácido, con humor negro gamer de amigos y carrilla pesada pero divertida. Cero filtros de asistente corporativo.
+- Te burlas con ganas de los mancos que la cagan en la raid, de los que se mueren por noobs en Abyss o PvP, y de las quejas pendejas. Les dices mancos, conos, muertos de hambre, manquísimos o que desinstalen el juego si la riegan.
+- Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls).
+- Hablas con jerga mexicana callejera y natural de Discord (wey, no mames, cállate el hocico, qué manco eres, no seas payaso, qué pedo, chelas, al chile, te faltan manos, qué mamada).
+- NUNCA des sermones ni sermonees sobre jugar bien. Si te piden música o volumen, no opines de la canción, limítate a tirar carrilla corta.
 
-REGLAS ESTRICTAS DE CONVERSACIÓN:
-1. Responde DIRECTO y con sustancia a la pregunta o tema que te están diciendo. Si te preguntan algo de builds, mecánicas o del juego, respóndeles la neta con carrilla.
-2. PROHIBIDO repetir siempre las mismas muletillas como "Simón", "Al tiro" o "De nada". Habla de forma natural y variada.
-3. Máximo 1 o 2 oraciones cortas (se lee en voz alta en Discord). NUNCA uses viñetas, negritas, asteriscos ni listas.`;
+REGLAS DE RESPUESTA:
+1. Máximo 1 o 2 oraciones cortas, directas y con remate cómico mamón (se reproduce en voz alta por TTS en el canal).
+2. Sé afilado, variado y espontáneo. Cero respuestas de robot amable.
+3. NUNCA uses viñetas, negritas ni asteriscos.`;
 
 const historial = []; // últimos mensajes en memoria
-let modoCharlaContinua = true; // true = charla continua por defecto; false = solo responde si dicen 'pepe'
+let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
 let botHablando = false; // anti-eco
 
 // Filtro de alucinaciones típicas que Whisper genera cuando hay silencio o estática
@@ -95,7 +98,11 @@ const FANTASMAS_WHISPER = [
 ];
 
 function esAlucinacionWhisper(texto) {
-  const limpio = texto.toLowerCase().replace(/[^a-záéíóúñ]/g, '').trim();
+  const t = (texto || '').toLowerCase();
+  if (/subt[ií]tulos/i.test(t) || /amara\.org/i.test(t) || /suscr[ií]bete/i.test(t) || /pr[oó]ximo\s+video/i.test(t) || /hasta\s+la\s+pr[oó]xima/i.test(t) || /un\s+saludo/i.test(t)) {
+    return true;
+  }
+  const limpio = t.replace(/[^a-záéíóúñ]/g, '').trim();
   return FANTASMAS_WHISPER.includes(limpio);
 }
 
@@ -540,9 +547,7 @@ function obtenerUrlConYtDlp(videoUrl) {
     const baseArgs = [
       '-g',
       '-f', 'bestaudio/best',
-      '--no-playlist',
-      '--remote-components', 'ejs:github',
-      '--js-runtimes', 'node'
+      '--no-playlist'
     ];
 
     if (hasCookies) {
@@ -744,8 +749,9 @@ async function reproducirCancion(videoInfo) {
         const cid = await play.getFreeClientID();
         await play.setToken({ soundcloud: { client_id: cid } });
         const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 1 });
-        if (scResults && scResults.length > 0) {
-          const scStream = await play.stream(scResults[0].url);
+        if (scResults && scResults[0]) {
+          const trackUrl = scResults[0].permalink || scResults[0].url;
+          const scStream = await play.stream(trackUrl);
           streamOrUrl = scStream.stream;
           inputType = scStream.type;
           logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${scResults[0].name}"`);
@@ -1213,10 +1219,7 @@ client.once('ready', async () => {
       await guild.commands.set(COMANDOS);
       console.log(`⚡ Comandos listos en: ${guild.name}`);
 
-      const guardados = leerCanalesAFK();
-      if (guardados.modoCharla !== undefined) {
-        modoCharlaContinua = guardados.modoCharla;
-      }
+      modoCharlaContinua = false; // Siempre inicia en modo tranquilo (OFF) para no molestar a nadie
       let targetId = guardados[guild.id] || (guild.id === PREF_GUILD ? PREF_CANAL : null);
       let target = targetId ? guild.channels.cache.get(targetId) : null;
       if (!target) target = guild.channels.cache.find(c => c.isVoiceBased());
