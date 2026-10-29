@@ -11,11 +11,16 @@ import { execFile } from 'node:child_process';
 import dotenv from 'dotenv';
 import prism from 'prism-media';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import yts from 'yt-search';
+import { Ytdl } from '@distube/ytdl-core';
 import {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ActivityType
 } from 'discord.js';
 import {
@@ -314,32 +319,237 @@ async function generarAudioJorge(texto, outPath) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 7. REPRODUCTOR Y CONTROL DE VOZ
+// 7. SISTEMA DE AUDIO (Voz de Pepe + Música de YouTube + Volumen)
 // ───────────────────────────────────────────────────────────────
-const player = createAudioPlayer({
+const ytdl = new Ytdl();
+let volumenMusica = 0.5; // 50% por defecto (0.05 a 1.0)
+let cancionActual = null; // { title, url, timestamp, author }
+let recursoMusica = null; // AudioResource con inlineVolume
+let opcionesMusica = []; // Top 3 opciones encontradas
+let esperandoSeleccion = false;
+let timeoutSeleccion = null;
+
+// Reproductor exclusivo para la voz de Pepe
+const voicePlayer = createAudioPlayer({
   behaviors: { noSubscriber: NoSubscriberBehavior.Play }
 });
 
-player.on(AudioPlayerStatus.Playing, () => {
-  logEvent('🔊 [AudioPlayer] Reproduciendo audio en el canal de voz...');
+// Reproductor exclusivo para la música de YouTube
+const musicPlayer = createAudioPlayer({
+  behaviors: { noSubscriber: NoSubscriberBehavior.Play }
 });
 
-player.on(AudioPlayerStatus.Idle, () => {
-  botHablando = false;
-  logEvent('⏹️ [AudioPlayer] Audio finalizado.');
-});
-
-player.on('error', (err) => {
-  logEvent(`⚠️ [AudioPlayer Error]: ${err.message}`);
+voicePlayer.on(AudioPlayerStatus.Idle, () => {
   botHablando = false;
 });
+voicePlayer.on('error', (err) => {
+  logEvent(`⚠️ [VoicePlayer Error]: ${err.message}`);
+  botHablando = false;
+});
 
-// Función para generar un stream de silencio PCM (48kHz, 16-bit, stereo)
-// Discord REQUIERE que el bot envíe al menos un paquete de audio UDP
-// para activar el enrutamiento de paquetes de voz de los usuarios hacia el bot.
+musicPlayer.on(AudioPlayerStatus.Playing, () => {
+  logEvent(`🎶 [MusicPlayer] Tocando "${cancionActual?.title || 'Canción'}" al ${Math.round(volumenMusica * 100)}% de volumen`);
+});
+musicPlayer.on(AudioPlayerStatus.Idle, () => {
+  logEvent('⏹️ [MusicPlayer] Canción terminada.');
+  cancionActual = null;
+  recursoMusica = null;
+});
+musicPlayer.on('error', (err) => {
+  logEvent(`⚠️ [MusicPlayer Error]: ${err.message}`);
+  cancionActual = null;
+  recursoMusica = null;
+});
+
+function limpiarTituloParaVoz(titulo) {
+  return (titulo || '')
+    .replace(/\s*[\(\[][^\)\]]*(official|video|audio|letra|lyrics|4k|hd|remix|ft\.|feat\.|records)[^\)\]]*[\)\]]/gi, '')
+    .replace(/[|#_]/g, '')
+    .replace(/\s*-\s*-/g, ' -')
+    .replace(/\s*-\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function ajustarVolumen(nuevoNivel) {
+  volumenMusica = Math.max(0.05, Math.min(1.0, nuevoNivel));
+  if (recursoMusica?.volume) {
+    recursoMusica.volume.setVolume(volumenMusica);
+  }
+  const pct = Math.round(volumenMusica * 100);
+  logEvent(`🔊 [Volumen ajustado a]: ${pct}%`);
+  return pct;
+}
+
+// Reproduce la voz de Pepe con Pause & Swap si hay música sonando
+async function reproducirVozPepe(texto) {
+  if (!texto) return;
+  botHablando = true;
+
+  const audioFile = path.join(CACHE_DIR, `pepe_${Date.now()}.mp3`);
+  try {
+    const hayMusica = musicPlayer.state.status === AudioPlayerStatus.Playing;
+    if (hayMusica) {
+      musicPlayer.pause();
+    }
+
+    logEvent(`⏳ [TTS] Sintetizando voz de Jorge: "${texto}"`);
+    await generarAudioJorge(texto, audioFile);
+    const resource = createAudioResource(fs.createReadStream(audioFile), {
+      inputType: StreamType.Arbitrary
+    });
+
+    if (conexionActual) {
+      conexionActual.subscribe(voicePlayer);
+    }
+    voicePlayer.play(resource);
+    logEvent(`🎙️ [Pepe hablando]: "${texto}"`);
+
+    // Esperar a que Pepe termine su intervención
+    await new Promise((resolve) => {
+      const finish = () => {
+        voicePlayer.off(AudioPlayerStatus.Idle, finish);
+        voicePlayer.off('error', finish);
+        resolve();
+      };
+      voicePlayer.on(AudioPlayerStatus.Idle, finish);
+      voicePlayer.on('error', finish);
+    });
+
+    // Si había música sonando previamente, restaurar suscripción y despausar
+    if (hayMusica && conexionActual && cancionActual) {
+      conexionActual.subscribe(musicPlayer);
+      musicPlayer.unpause();
+      logEvent('▶️ [Música reanudada tras voz de Pepe]');
+    }
+  } catch (err) {
+    logEvent(`❌ Error en voz de Pepe: ${err.message}`);
+  } finally {
+    botHablando = false;
+    setTimeout(() => {
+      try { fs.unlinkSync(audioFile); } catch {}
+    }, 25000);
+  }
+}
+
+const reproducirEnCanal = reproducirVozPepe;
+
+async function buscarYDarOpciones(query, canalTexto = null) {
+  try {
+    logEvent(`🔍 [Buscando en YouTube]: "${query}"`);
+    const r = await yts(query);
+    const videos = (r.videos || []).slice(0, 3);
+
+    if (videos.length === 0) {
+      await reproducirVozPepe(`No encontré ninguna rola de ${query} en YouTube carnal.`);
+      return;
+    }
+
+    opcionesMusica = videos.map(v => ({
+      title: v.title,
+      url: v.url,
+      timestamp: v.timestamp,
+      author: v.author?.name || 'YouTube'
+    }));
+    esperandoSeleccion = true;
+
+    // Timeout de 45 segundos para responder
+    if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
+    timeoutSeleccion = setTimeout(() => {
+      if (esperandoSeleccion) {
+        esperandoSeleccion = false;
+        opcionesMusica = [];
+        logEvent('⏱️ [Tiempo agotado para selección de música]');
+      }
+    }, 45000);
+
+    const t1 = limpiarTituloParaVoz(opcionesMusica[0].title);
+    const t2 = opcionesMusica[1] ? limpiarTituloParaVoz(opcionesMusica[1].title) : null;
+    const t3 = opcionesMusica[2] ? limpiarTituloParaVoz(opcionesMusica[2].title) : null;
+
+    let mensajeVoz = `Encontré estas rolas carnal: la 1 es ${t1}`;
+    if (t2) mensajeVoz += `, la 2 es ${t2}`;
+    if (t3) mensajeVoz += `, y la 3 es ${t3}`;
+    mensajeVoz += '. ¿Cuál ponemos? Dime la 1, la 2 o la 3.';
+
+    // Enviar tarjeta interactiva con botones si tenemos canal de texto
+    if (canalTexto) {
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0xED4245)
+          .setTitle(`🎵 Resultados para: "${query}"`)
+          .setDescription(
+            opcionesMusica.map((v, i) => `**${i + 1}.** [${v.title}](${v.url}) \`[${v.timestamp}]\``).join('\n\n') +
+            '\n\n🗣️ *Dí por voz **"Pepe, pon la 1"**, **"la 2"**, **"la 3"** o pulsa un botón:*'
+          )
+          .setFooter({ text: 'Pepe Rey Del Noxz · YouTube DJ' });
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('musica_sel_0').setLabel('1️⃣ Opción 1').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('musica_sel_1').setLabel('2️⃣ Opción 2').setStyle(ButtonStyle.Primary).setDisabled(!opcionesMusica[1]),
+          new ButtonBuilder().setCustomId('musica_sel_2').setLabel('3️⃣ Opción 3').setStyle(ButtonStyle.Primary).setDisabled(!opcionesMusica[2]),
+          new ButtonBuilder().setCustomId('musica_cancel').setLabel('❌ Cancelar').setStyle(ButtonStyle.Secondary)
+        );
+
+        await canalTexto.send({ embeds: [embed], components: [row] });
+      } catch (err) {
+        console.warn('Error enviando botones de música:', err.message);
+      }
+    }
+
+    await reproducirVozPepe(mensajeVoz);
+  } catch (err) {
+    logEvent(`❌ Error buscando música: ${err.message}`);
+    await reproducirVozPepe('Se me trabó el YouTube compa, repíteme qué rola querías.');
+  }
+}
+
+async function reproducirCancion(videoInfo) {
+  if (!videoInfo) return;
+  esperandoSeleccion = false;
+  if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
+
+  try {
+    cancionActual = videoInfo;
+    const tituloLimpio = limpiarTituloParaVoz(videoInfo.title);
+    logEvent(`🎵 [Cargando audio]: "${videoInfo.title}" [${videoInfo.timestamp}]`);
+
+    await reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`);
+
+    const stream = ytdl.download(videoInfo.url, {
+      filter: { hasAudio: true, hasVideo: false },
+      quality: 'highestaudio'
+    });
+
+    recursoMusica = createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true
+    });
+    recursoMusica.volume.setVolume(volumenMusica);
+
+    if (conexionActual) {
+      conexionActual.subscribe(musicPlayer);
+    }
+    musicPlayer.play(recursoMusica);
+    logEvent(`▶️ [Reproduciendo]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
+  } catch (err) {
+    logEvent(`❌ Error reproduciendo audio de YouTube: ${err.message}`);
+    await reproducirVozPepe('No se pudo jalar esa rola carnal, YouTube no quiso soltar el audio.');
+  }
+}
+
+function detenerMusica() {
+  cancionActual = null;
+  recursoMusica = null;
+  esperandoSeleccion = false;
+  if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
+  musicPlayer.stop();
+  logEvent('⏹️ [Música detenida]');
+}
+
 function createSilenceStream(durationSeconds = 1) {
   const stream = new Readable();
-  const frameSize = 960 * 4; // 20ms de audio PCM estéreo
+  const frameSize = 960 * 4;
   const silenceFrame = Buffer.alloc(frameSize);
   const totalFrames = Math.floor(durationSeconds * 50);
   let count = 0;
@@ -358,35 +568,57 @@ function kickstartVoice() {
     const silenceResource = createAudioResource(createSilenceStream(1), {
       inputType: StreamType.Raw
     });
-    player.play(silenceResource);
-    console.log('📡 [Kickstart UDP] Frame de silencio enviado a Discord para habilitar recepción.');
+    voicePlayer.play(silenceResource);
+    logEvent('📡 [Kickstart UDP] Frame de silencio enviado a Discord para habilitar recepción.');
   } catch (err) {
     console.warn('⚠️ Error enviando silencio kickstart:', err.message);
   }
 }
 
-async function reproducirEnCanal(texto) {
-  if (!texto) return;
-  botHablando = true;
+function parseComandoVoz(texto) {
+  const t = texto.toLowerCase().trim();
 
-  const audioFile = path.join(CACHE_DIR, `pepe_${Date.now()}.mp3`);
-  try {
-    logEvent(`⏳ [TTS] Sintetizando voz de Jorge: "${texto}"`);
-    await generarAudioJorge(texto, audioFile);
-    const resource = createAudioResource(fs.createReadStream(audioFile), {
-      inputType: StreamType.Arbitrary
-    });
-    player.play(resource);
-    logEvent(`🎙️ [Pepe hablando]: "${texto}"`);
-  } catch (err) {
-    logEvent(`❌ Error generando o reproduciendo voz de Jorge: ${err.message}`);
-    botHablando = false;
-  } finally {
-    // Borrar temporal después de que termine de sonar
-    setTimeout(() => {
-      try { fs.unlinkSync(audioFile); } catch {}
-    }, 25000);
+  // Si estábamos esperando selección de canción
+  if (esperandoSeleccion) {
+    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(1|uno|primera)/i.test(t)) return { type: 'SELECCION', idx: 0 };
+    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(2|dos|segunda)/i.test(t)) return { type: 'SELECCION', idx: 1 };
+    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(3|tres|tercera)/i.test(t)) return { type: 'SELECCION', idx: 2 };
+    if (/(?:cancela|cancelar|ninguna|olv[ií]dalo)/i.test(t)) return { type: 'CANCELAR_SELECCION' };
   }
+
+  // Volumen
+  if (/(?:sube|s[uú]bele|aumenta|m[aá]s)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
+    return { type: 'VOLUMEN_SUBIR' };
+  }
+  if (/(?:baja|b[aá]jale|disminuye|menos)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*bajo/i.test(t)) {
+    return { type: 'VOLUMEN_BAJAR' };
+  }
+  const mVol = t.match(/volumen\s*(?:al|a)?\s*(\d{1,3})/i);
+  if (mVol) {
+    return { type: 'VOLUMEN_SET', val: parseInt(mVol[1], 10) };
+  }
+
+  // Control de reproducción
+  if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
+    return { type: 'MUSICA_STOP' };
+  }
+  if (/(?:pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
+    return { type: 'MUSICA_PAUSE' };
+  }
+  if (/(?:despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
+    return { type: 'MUSICA_RESUME' };
+  }
+
+  // Búsqueda de canciones
+  const mSearch = t.match(/(?:pepe\s+)?(?:pon|busca|reproduce|toca)\s+(?:la\s+canci[oó]n\s+(?:de\s+)?|la\s+rola\s+(?:de\s+)?|la\s+m[uú]sica\s+(?:de\s+)?|m[uú]sica\s+(?:de\s+)?|canci[oó]n\s+(?:de\s+)?|rola\s+(?:de\s+)?|de\s+)?(.+)/i);
+  if (mSearch) {
+    const q = mSearch[1].trim();
+    if (!/^(atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
+      return { type: 'BUSCAR_MUSICA', query: q };
+    }
+  }
+
+  return { type: 'CHARLA' };
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -463,13 +695,83 @@ function configurarEscucha(connection) {
 
         logEvent(`👂 [${username} dijo]: "${texto}" (Modo continuo: ${modoCharlaContinua})`);
 
+        const cmd = parseComandoVoz(texto);
+        if (cmd.type !== 'CHARLA') {
+          logEvent(`🎯 [Comando de Música/Volumen]: Tipo = ${cmd.type}`);
+        }
+
+        if (cmd.type === 'SELECCION') {
+          const video = opcionesMusica[cmd.idx];
+          if (video) {
+            await reproducirCancion(video);
+          } else {
+            await reproducirVozPepe(`No hay opción ${cmd.idx + 1} carnal, elige entre las opciones que te di.`);
+          }
+          return;
+        }
+
+        if (cmd.type === 'CANCELAR_SELECCION') {
+          esperandoSeleccion = false;
+          opcionesMusica = [];
+          await reproducirVozPepe('Sobres compa, búsqueda cancelada.');
+          return;
+        }
+
+        if (cmd.type === 'VOLUMEN_SUBIR') {
+          const pct = ajustarVolumen(volumenMusica + 0.2);
+          await reproducirVozPepe(`Sobres, le subí al volumen a ${pct}%.`);
+          return;
+        }
+
+        if (cmd.type === 'VOLUMEN_BAJAR') {
+          const pct = ajustarVolumen(volumenMusica - 0.2);
+          await reproducirVozPepe(`Ya le bajé al volumen a ${pct}%.`);
+          return;
+        }
+
+        if (cmd.type === 'VOLUMEN_SET') {
+          const pct = ajustarVolumen(cmd.val / 100);
+          await reproducirVozPepe(`Cámara, volumen al ${pct}%.`);
+          return;
+        }
+
+        if (cmd.type === 'MUSICA_STOP') {
+          detenerMusica();
+          await reproducirVozPepe('Ya quité la música compas.');
+          return;
+        }
+
+        if (cmd.type === 'MUSICA_PAUSE') {
+          musicPlayer.pause();
+          await reproducirVozPepe('Música pausada, carnal.');
+          return;
+        }
+
+        if (cmd.type === 'MUSICA_RESUME') {
+          if (cancionActual) {
+            if (conexionActual) conexionActual.subscribe(musicPlayer);
+            musicPlayer.unpause();
+            await reproducirVozPepe('Seguimos con el cotorreo.');
+          } else {
+            await reproducirVozPepe('No hay ninguna rola pausada carnal, dime cuál ponemos.');
+          }
+          return;
+        }
+
+        if (cmd.type === 'BUSCAR_MUSICA') {
+          const guild = client.guilds.cache.get(PREF_GUILD);
+          const canalTexto = guild?.channels.cache.find(c => c.isTextBased() && c.permissionsFor(client.user)?.has('SendMessages'));
+          await buscarYDarOpciones(cmd.query, canalTexto);
+          return;
+        }
+
         const esParaPepe = texto.toLowerCase().includes('pepe');
 
         // Responder si el modo continuo está activo O si dijeron "pepe"
         if (modoCharlaContinua || esParaPepe) {
           logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username);
-          await reproducirEnCanal(respuesta);
+          await reproducirVozPepe(respuesta);
         } else {
           logEvent(`ℹ️ [Ignorado] Modo continuo apagado y no dijeron 'Pepe'.`);
         }
@@ -531,11 +833,11 @@ async function conectarCanal(channel) {
     });
 
     conexionActual = connection;
-    connection.subscribe(player);
+    connection.subscribe(voicePlayer);
 
     connection.on(VoiceConnectionStatus.Ready, () => {
       logEvent(`✅ [Voz Activa] Pepe Rey asegurado en "${channel.name}". Racha y oído activos.`);
-      connection.subscribe(player);
+      connection.subscribe(voicePlayer);
       configurarEscucha(connection);
       kickstartVoice();
     });
@@ -582,6 +884,31 @@ const COMANDOS = [
           { name: '🟢 ON - Charla continua (escucha todo)', value: 'on' },
           { name: '🔴 OFF - Modo tranquilo (solo responde si dices Pepe)', value: 'off' }
         )
+    ),
+  new SlashCommandBuilder()
+    .setName('musica')
+    .setDescription('Controla la música de YouTube de Pepe Rey')
+    .addSubcommand(sub =>
+      sub.setName('buscar')
+        .setDescription('Busca canciones en YouTube y da 3 opciones')
+        .addStringOption(opt => opt.setName('cancion').setDescription('Nombre de la canción o artista').setRequired(true))
+    )
+    .addSubcommand(sub =>
+      sub.setName('volumen')
+        .setDescription('Ajusta el volumen de la música (1 a 100%)')
+        .addIntegerOption(opt => opt.setName('nivel').setDescription('Nivel de 1 a 100').setRequired(true).setMinValue(1).setMaxValue(100))
+    )
+    .addSubcommand(sub =>
+      sub.setName('parar')
+        .setDescription('Detiene la música por completo')
+    )
+    .addSubcommand(sub =>
+      sub.setName('pausar')
+        .setDescription('Pausa la música actual')
+    )
+    .addSubcommand(sub =>
+      sub.setName('reanudar')
+        .setDescription('Reanuda la música pausada')
     ),
   new SlashCommandBuilder()
     .setName('decir')
@@ -654,6 +981,28 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  // Manejo de botones de selección de música
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith('musica_sel_')) {
+      const idx = parseInt(interaction.customId.replace('musica_sel_', ''), 10);
+      const video = opcionesMusica[idx];
+      if (video) {
+        await interaction.reply({ content: `🎶 Seleccionaste la opción ${idx + 1}: **${video.title}**`, ephemeral: true });
+        await reproducirCancion(video);
+      } else {
+        await interaction.reply({ content: '❌ Esa opción ya expiró o no está disponible.', ephemeral: true });
+      }
+      return;
+    }
+    if (interaction.customId === 'musica_cancel') {
+      esperandoSeleccion = false;
+      opcionesMusica = [];
+      await interaction.reply({ content: '❌ Búsqueda de música cancelada.', ephemeral: true });
+      return;
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'pepe') {
@@ -662,9 +1011,9 @@ client.on('interactionCreate', async (interaction) => {
     guardarModoCharla(modoCharlaContinua);
 
     if (modoCharlaContinua) {
-      reproducirEnCanal('Qué onda banda, modo charla continua activado. Platíquenme qué andan haciendo.');
+      reproducirVozPepe('Qué onda banda, modo charla continua activado. Platíquenme qué andan haciendo.');
     } else {
-      reproducirEnCanal('Cámara gente, me pongo en modo tranquilo. Si me ocupan, nada más háblenme por mi nombre Pepe.');
+      reproducirVozPepe('Cámara gente, me pongo en modo tranquilo. Si me ocupan, nada más háblenme por mi nombre Pepe.');
     }
 
     const embed = new EmbedBuilder()
@@ -680,12 +1029,53 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply({ embeds: [embed] });
   }
 
+  if (interaction.commandName === 'musica') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'buscar') {
+      const q = interaction.options.getString('cancion');
+      await interaction.reply({ content: `🔍 Buscando **"${q}"** en YouTube...`, ephemeral: true });
+      await buscarYDarOpciones(q, interaction.channel);
+      return;
+    }
+
+    if (sub === 'volumen') {
+      const nivel = interaction.options.getInteger('nivel');
+      const pct = ajustarVolumen(nivel / 100);
+      await reproducirVozPepe(`Cámara, volumen al ${pct}%.`);
+      return interaction.reply({ content: `🔊 Volumen ajustado a **${pct}%**.`, ephemeral: true });
+    }
+
+    if (sub === 'parar') {
+      detenerMusica();
+      await reproducirVozPepe('Ya quité la música compas.');
+      return interaction.reply({ content: '⏹️ Música detenida.', ephemeral: true });
+    }
+
+    if (sub === 'pausar') {
+      musicPlayer.pause();
+      await reproducirVozPepe('Música pausada, carnal.');
+      return interaction.reply({ content: '⏸️ Música pausada.', ephemeral: true });
+    }
+
+    if (sub === 'reanudar') {
+      if (cancionActual) {
+        if (conexionActual) conexionActual.subscribe(musicPlayer);
+        musicPlayer.unpause();
+        await reproducirVozPepe('Seguimos con el cotorreo.');
+        return interaction.reply({ content: `▶️ Reanudando: **${cancionActual.title}**`, ephemeral: true });
+      } else {
+        return interaction.reply({ content: '❌ No hay ninguna canción en pausa.', ephemeral: true });
+      }
+    }
+  }
+
   if (interaction.commandName === 'decir') {
     const texto = interaction.options.getString('texto');
     await interaction.deferReply();
 
     const respuesta = await responderConIA(texto, interaction.user.displayName || interaction.user.username);
-    await reproducirEnCanal(respuesta);
+    await reproducirVozPepe(respuesta);
 
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
@@ -722,10 +1112,12 @@ client.on('interactionCreate', async (interaction) => {
         { name: '🎙️ Canal de Voz', value: vc ? `**${vc.name}**` : '❌ Desconectado', inline: true },
         { name: '🗣️ Modo Charla', value: modoCharlaContinua ? '🟢 Continua' : '🔴 Solo Mención ("Pepe")', inline: true },
         { name: '🇲🇽 Voz Activa', value: 'Jorge (México)', inline: true },
+        { name: '🎵 Canción Actual', value: cancionActual ? `[${cancionActual.title}](${cancionActual.url}) \`[${cancionActual.timestamp}]\`` : 'Ninguna', inline: false },
+        { name: '🔊 Volumen Música', value: `${Math.round(volumenMusica * 100)}%`, inline: true },
         { name: '🧠 Memoria RAM', value: `${memMb} MB`, inline: true },
         { name: '⚡ Ping', value: `${client.ws.ping} ms`, inline: true }
       )
-      .setFooter({ text: 'Pepe Rey · Cuidando racha y platicando 24/7' });
+      .setFooter({ text: 'Pepe Rey · Cuidando racha, DJ y platicando 24/7' });
 
     return interaction.reply({ embeds: [embed] });
   }
