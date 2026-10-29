@@ -263,12 +263,14 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     // Limpieza de caracteres no hablables
     respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
 
+    logEvent(`💬 [IA generó respuesta]: "${respuesta}"`);
+
     historial.push({ role: 'assistant', content: respuesta });
     if (historial.length > 8) historial.shift();
 
     return respuesta;
   } catch (err) {
-    console.error('❌ Error llamando a Groq:', err.message);
+    logEvent(`❌ Error llamando a Groq: ${err.message}`);
     return 'Se me fue la onda un segundo, carnal.';
   }
 }
@@ -318,12 +320,17 @@ const player = createAudioPlayer({
   behaviors: { noSubscriber: NoSubscriberBehavior.Play }
 });
 
+player.on(AudioPlayerStatus.Playing, () => {
+  logEvent('🔊 [AudioPlayer] Reproduciendo audio en el canal de voz...');
+});
+
 player.on(AudioPlayerStatus.Idle, () => {
   botHablando = false;
+  logEvent('⏹️ [AudioPlayer] Audio finalizado.');
 });
 
 player.on('error', (err) => {
-  console.warn('⚠️ [AudioPlayer Error]:', err.message);
+  logEvent(`⚠️ [AudioPlayer Error]: ${err.message}`);
   botHablando = false;
 });
 
@@ -364,14 +371,15 @@ async function reproducirEnCanal(texto) {
 
   const audioFile = path.join(CACHE_DIR, `pepe_${Date.now()}.mp3`);
   try {
+    logEvent(`⏳ [TTS] Sintetizando voz de Jorge: "${texto}"`);
     await generarAudioJorge(texto, audioFile);
     const resource = createAudioResource(fs.createReadStream(audioFile), {
       inputType: StreamType.Arbitrary
     });
     player.play(resource);
-    console.log(`🎙️ [Pepe hablando]: "${texto}"`);
+    logEvent(`🎙️ [Pepe hablando]: "${texto}"`);
   } catch (err) {
-    console.error('❌ Error generando o reproduciendo voz de Jorge:', err.message);
+    logEvent(`❌ Error generando o reproduciendo voz de Jorge: ${err.message}`);
     botHablando = false;
   } finally {
     // Borrar temporal después de que termine de sonar
@@ -527,6 +535,7 @@ async function conectarCanal(channel) {
 
     connection.on(VoiceConnectionStatus.Ready, () => {
       logEvent(`✅ [Voz Activa] Pepe Rey asegurado en "${channel.name}". Racha y oído activos.`);
+      connection.subscribe(player);
       configurarEscucha(connection);
       kickstartVoice();
     });
