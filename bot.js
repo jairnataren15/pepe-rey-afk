@@ -91,11 +91,13 @@ PERSONALIDAD Y TONO:
 - Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
 - Hablas con jerga mexicana callejera y natural de Discord (wey, no mames, cállate el hocico, qué manco eres, no seas payaso, qué pedo, chelas, al chile, te faltan manos, qué mamada, ni pa estorbar sirves).
 
-REGLA DE MÚSICA (SOLO PARA CANCIONES/ARTISTAS):
-Si el usuario pide EXPLÍCITAMENTE que pongas, reproduzcas o toques una CANCIÓN, ROLA, MÚSICA o ARTISTA (ej: "ponte la de...", "pon música de...", "toca algo de...", "ponte wifey", "suéltate una de aria bela"):
-NO RESPONDAS NADA CONVERSACIONAL. Tu respuesta DEBE ser ÚNICAMENTE:
+REGLA DE MÚSICA (SOLO ÓRDENES DIRECTAS DE PONER UNA CANCIÓN):
+Usa [BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>] ÚNICAMENTE cuando el usuario te esté dando una ORDEN EXPLÍCITA Y DIRECTA A TI (Pepe) para que pongas, reproduzcas o busques en YouTube una canción o artista en este momento (ej: "Pepe pon la de...", "Pepe reproduce...", "Pepe búscame en YouTube la rola de...").
+PROHIBIDO usar [BUSCAR_MUSICA] si:
+- Solo están platicando o mencionando canciones, rolas, temas o música en su conversación sin ordenarte ponerla.
+- Mencionan "Google", "internet", "web", o te hacen una pregunta general.
+Cuando sí sea una orden directa de poner música, responde ÚNICAMENTE:
 [BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>]
-PROHIBIDO usar [BUSCAR_MUSICA] si el usuario menciona "Google", "internet", "web", o si solo te está haciendo una pregunta o pidiendo que investigues un dato.
 
 REGLA DE BÚSQUEDA EN GOOGLE / INTERNET:
 Si el usuario te pide buscar algo específico en Google o internet, o te pregunta un dato real, noticia, precio, fecha, tier list, quién es alguien o qué es algo que requiera buscar en la web (ej: "busca en Google quién ganó...", "búscame las mejores clases...", "búscame en internet qué es..."):
@@ -1119,8 +1121,9 @@ function kickstartVoice() {
 
 function parseComandoVoz(texto) {
   const t = (texto || '').toLowerCase().replace(/[¿?¡!.,;:\"']/g, '').trim();
+  const dicePepe = /\bpepe\b/i.test(t);
 
-  // Si estábamos esperando selección de canción
+  // 1. Si estábamos esperando selección de canción (1, 2, 3 o cancelar), permitir respuesta directa
   if (esperandoSeleccion) {
     if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:1|uno|una|primera|primer)\b/i.test(t)) return { type: 'SELECCION', idx: 0 };
     if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:2|dos|segunda|segundo)\b/i.test(t)) return { type: 'SELECCION', idx: 1 };
@@ -1128,7 +1131,12 @@ function parseComandoVoz(texto) {
     if (/\b(cancela|cancelar|ninguna|olv[ií]dalo|ya\s*no|no\s*pongas\s*nada)\b/i.test(t)) return { type: 'CANCELAR_SELECCION' };
   }
 
-  // Volumen
+  // Si no dijeron "Pepe" y el modo continuo está apagado, no interceptar nada de la charla entre amigos
+  if (!dicePepe && !modoCharlaContinua) {
+    return { type: 'CHARLA' };
+  }
+
+  // 2. Controles de volumen y reproducción (solo cuando le hablan a Pepe o modo continuo activo)
   if (/(?:sube|s[uú]bele|aumenta|m[aá]s)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
     return { type: 'VOLUMEN_SUBIR' };
   }
@@ -1140,31 +1148,18 @@ function parseComandoVoz(texto) {
     return { type: 'VOLUMEN_SET', val: parseInt(mVol[1], 10) };
   }
 
-  // Control de reproducción
   if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t) || /\b(?:pepe\s+)?(?:c[aá]llate|apaga\s*la\s*m[uú]sica)\b/i.test(t)) {
     return { type: 'MUSICA_STOP' };
   }
-  if (/(?:pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
+  if (/(?:pausa|pa[uú]sale)\s*(?:la)\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_PAUSE' };
   }
-  if (/(?:despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
+  if (/(?:despausa|reanuda)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
     return { type: 'MUSICA_RESUME' };
   }
 
-  // Si menciona Google, internet, Wikipedia o es una pregunta de información general, enviarlo a la IA (que tiene búsqueda web)
-  const esConsultaWebOPregunta = /\b(?:google|internet|web|wikipedia|investiga|averigua|qui[eé]n\s+es|qu[eé]\s+es|cu[aá]nto|cu[aá]ndo|d[oó]nde|por\s+qu[eé]|noticias|clima|significa|definici[oó]n)\b/i.test(t);
-
-  // Búsqueda directa de canciones (nota: "busca" solo activa música directa si viene acompañado de "canción/música/rola")
-  const tieneVerboReproducir = /\b(?:pon(?:te|me|nos)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|canta(?:te)?|suena)\b/i.test(t);
-  const tienePalabraMusica = /\b(?:m[uú]sica|canci[oó]n|canciones|rolas?|temas?|pista)\b/i.test(t);
-
-  if (!esConsultaWebOPregunta && (tieneVerboReproducir || tienePalabraMusica)) {
-    const q = limpiarQueryBusqueda(texto);
-    if (q && q.length >= 2 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off|google|internet|algo|nada|eso)$/i.test(q)) {
-      return { type: 'BUSCAR_MUSICA', query: q };
-    }
-  }
-
+  // Toda petición de buscar canciones o buscar en Google pasa por el cerebro de IA (GPT-4o-mini)
+  // para que entienda el contexto real y nunca busque en YouTube cuando solo están platicando
   return { type: 'CHARLA' };
 }
 
