@@ -4,3 +4,5 @@ cache/
 afk_channels.json
 yt-dlp
 yt-dlp.exe
+cookies.txt
+*cookies*.txt

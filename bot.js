@@ -14,6 +14,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import yts from 'yt-search';
 import { Ytdl } from '@distube/ytdl-core';
+import play from 'play-dl';
 import { asegurarYtDlp } from './install-ytdlp.js';
 
 if (ffmpegPath) {
@@ -407,29 +408,54 @@ function ajustarVolumen(nuevoNivel) {
   return pct;
 }
 
+function inicializarCookies() {
+  const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+  if (process.env.YOUTUBE_COOKIES_BASE64) {
+    try {
+      const decoded = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64.trim(), 'base64').toString('utf8');
+      fs.writeFileSync(cookiesPath, decoded, 'utf8');
+      logEvent('🍪 [Cookies]: cookies.txt cargado exitosamente desde YOUTUBE_COOKIES_BASE64');
+    } catch (err) {
+      logEvent(`⚠️ [Cookies]: Error decodificando YOUTUBE_COOKIES_BASE64: ${err.message}`);
+    }
+  } else if (fs.existsSync(cookiesPath)) {
+    logEvent('🍪 [Cookies]: Archivo local cookies.txt listo');
+  }
+}
+
 function getExecutableYtDlp() {
   const localBin = path.resolve(process.cwd(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
   if (fs.existsSync(localBin)) return localBin;
   return 'yt-dlp';
 }
 
-// Extrae el enlace HTTPS directo de audio con yt-dlp
+// Extrae el enlace HTTPS directo de audio con yt-dlp usando cookies y solver de JS
 function obtenerUrlConYtDlp(videoUrl) {
   return new Promise((resolve, reject) => {
     const bin = getExecutableYtDlp();
     const isWindows = process.platform === 'win32';
     const isLocal = bin.includes(path.sep);
+    const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+    const hasCookies = fs.existsSync(cookiesPath);
 
-    const runArgs = [
+    const baseArgs = [
       '-g',
       '-f', 'bestaudio/best',
       '--no-playlist',
-      '--extractor-args', 'youtube:player_client=android,web',
-      videoUrl
+      '--remote-components', 'ejs:github',
+      '--js-runtimes', 'node'
     ];
 
+    if (hasCookies) {
+      baseArgs.push('--cookies', cookiesPath);
+    } else {
+      baseArgs.push('--extractor-args', 'youtube:player_client=android,web');
+    }
+
+    baseArgs.push(videoUrl);
+
     const tryExec = (command, args, next) => {
-      execFile(command, args, { timeout: 25000 }, (err, stdout) => {
+      execFile(command, args, { timeout: 35000 }, (err, stdout) => {
         if (!err && stdout && stdout.trim().startsWith('http')) {
           const directUrl = stdout.trim().split('\n')[0].trim();
           resolve(directUrl);
@@ -440,25 +466,25 @@ function obtenerUrlConYtDlp(videoUrl) {
     };
 
     if (isLocal) {
-      tryExec(bin, runArgs, (err1) => {
+      tryExec(bin, baseArgs, (err1) => {
         if (isWindows) {
-          tryExec('py', ['-3.14', '-m', 'yt_dlp', ...runArgs], (err2) => {
-            tryExec('yt-dlp', runArgs, (err3) => reject(err1 || err2 || err3));
+          tryExec('py', ['-3.14', '-m', 'yt_dlp', ...baseArgs], (err2) => {
+            tryExec('yt-dlp', baseArgs, (err3) => reject(err1 || err2 || err3));
           });
         } else {
-          tryExec('python3', ['-m', 'yt_dlp', ...runArgs], (err2) => {
-            tryExec('yt-dlp', runArgs, (err3) => reject(err1 || err2 || err3));
+          tryExec('python3', ['-m', 'yt_dlp', ...baseArgs], (err2) => {
+            tryExec('yt-dlp', baseArgs, (err3) => reject(err1 || err2 || err3));
           });
         }
       });
     } else {
       if (isWindows) {
-        tryExec('py', ['-3.14', '-m', 'yt_dlp', ...runArgs], (err1) => {
-          tryExec('yt-dlp', runArgs, reject);
+        tryExec('py', ['-3.14', '-m', 'yt_dlp', ...baseArgs], (err1) => {
+          tryExec('yt-dlp', baseArgs, reject);
         });
       } else {
-        tryExec(bin, runArgs, (err1) => {
-          tryExec('python3', ['-m', 'yt_dlp', ...runArgs], reject);
+        tryExec(bin, baseArgs, (err1) => {
+          tryExec('python3', ['-m', 'yt_dlp', ...baseArgs], reject);
         });
       }
     }
@@ -609,22 +635,38 @@ async function reproducirCancion(videoInfo) {
     await reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`);
 
     let streamOrUrl = null;
+    let inputType = StreamType.Arbitrary;
     try {
       streamOrUrl = await obtenerUrlConYtDlp(videoInfo.url);
       logEvent(`📡 [Audio YouTube]: Enlace directo obtenido exitosamente con yt-dlp`);
     } catch (eYt) {
-      logEvent(`⚠️ yt-dlp falló, probando ytdl interno: ${eYt.message}`);
-      streamOrUrl = ytdl.download(videoInfo.url, {
-        filter: { hasAudio: true, hasVideo: false },
-        quality: 'highestaudio'
-      });
-      streamOrUrl.on('error', (errStream) => {
-        logEvent(`❌ [ytdl stream error]: ${errStream.message}`);
-      });
+      logEvent(`⚠️ YouTube falló (${eYt.message.slice(0, 90)}...), buscando en SoundCloud...`);
+      try {
+        const cid = await play.getFreeClientID();
+        await play.setToken({ soundcloud: { client_id: cid } });
+        const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 1 });
+        if (scResults && scResults.length > 0) {
+          const scStream = await play.stream(scResults[0].url);
+          streamOrUrl = scStream.stream;
+          inputType = scStream.type;
+          logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${scResults[0].name}"`);
+        } else {
+          throw new Error('No encontrado en SoundCloud');
+        }
+      } catch (eSc) {
+        logEvent(`⚠️ SoundCloud falló (${eSc.message}), probando ytdl interno...`);
+        streamOrUrl = ytdl.download(videoInfo.url, {
+          filter: { hasAudio: true, hasVideo: false },
+          quality: 'highestaudio'
+        });
+        streamOrUrl.on('error', (errStream) => {
+          logEvent(`❌ [ytdl stream error]: ${errStream.message}`);
+        });
+      }
     }
 
     recursoMusica = createAudioResource(streamOrUrl, {
-      inputType: StreamType.Arbitrary,
+      inputType: inputType,
       inlineVolume: true
     });
     recursoMusica.volume.setVolume(volumenMusica);
@@ -1052,6 +1094,7 @@ client.once('ready', async () => {
   });
 
   try {
+    inicializarCookies();
     await asegurarYtDlp();
   } catch (err) {
     console.error('⚠️ [yt-dlp Startup]:', err.message);
