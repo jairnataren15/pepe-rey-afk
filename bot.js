@@ -48,6 +48,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const GROQ_KEY = process.env.GROQ_API_KEY?.trim();
+const OPENAI_KEY = process.env.OPENAI_API_KEY?.trim();
 const PREF_CANAL = process.env.CANAL_ID?.trim() || '1557238620857831474';
 const PREF_GUILD = process.env.GUILD_ID?.trim() || '1310662226109272074';
 const CANAL_MUSICA_ID = process.env.CANAL_MUSICA_ID?.trim() || '1310712749709459516';
@@ -193,23 +194,23 @@ function createWavBuffer(pcmBuffer, sampleRate = 48000, channels = 2) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 4. TRANSCRIPCIÓN CON GROQ WHISPER
+// 4. TRANSCRIPCIÓN CON GROQ WHISPER (Con Fallback Turbo -> V3 y Anti-429)
 // ───────────────────────────────────────────────────────────────
-async function transcribirConGroq(wavBuffer) {
-  if (!GROQ_KEY) return null;
+let bloqueoWhisperHasta = 0;
 
+async function enviarAWhisper(wavBuffer, modelName = 'whisper-large-v3-turbo') {
   const boundary = '----PepeFormBoundary' + crypto.randomBytes(8).toString('hex');
   const body = [];
 
   body.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`));
   body.push(wavBuffer);
-  body.push(Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3-turbo\r\n`));
+  body.push(Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${modelName}\r\n`));
   body.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes\r\n`));
   body.push(Buffer.from(`--${boundary}--\r\n`));
 
   const payload = Buffer.concat(body);
 
-  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+  return await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${GROQ_KEY}`,
@@ -218,6 +219,30 @@ async function transcribirConGroq(wavBuffer) {
     },
     body: payload
   });
+}
+
+async function transcribirConGroq(wavBuffer) {
+  if (!GROQ_KEY) return null;
+
+  // Si estamos en pausa por Rate Limit (429), esperar para no saturar
+  if (Date.now() < bloqueoWhisperHasta) {
+    return null;
+  }
+
+  // 1. Intentar con whisper-large-v3-turbo
+  let res = await enviarAWhisper(wavBuffer, 'whisper-large-v3-turbo');
+
+  // 2. Si da 429 (límite de 20 RPM de Turbo), alternar inmediatamente a whisper-large-v3 (bucket separado de 20 RPM)
+  if (res.status === 429) {
+    logEvent('⚠️ [Whisper Turbo 429]: Alternando a whisper-large-v3...');
+    res = await enviarAWhisper(wavBuffer, 'whisper-large-v3');
+  }
+
+  if (res.status === 429) {
+    bloqueoWhisperHasta = Date.now() + 3500;
+    logEvent('⏳ [Whisper 429]: Límite de 20 RPM alcanzado en ambos modelos, enfriando 3.5s.');
+    return null;
+  }
 
   if (!res.ok) {
     const errText = await res.text();
@@ -229,12 +254,47 @@ async function transcribirConGroq(wavBuffer) {
   return json.text?.trim() || null;
 }
 
+// Enrutador de transcripción: si hay clave de OpenAI usa whisper-1 oficial (sin límite 20 RPM), sino Groq
+async function transcribirAudio(wavBuffer) {
+  if (OPENAI_KEY) {
+    try {
+      const boundary = '----PepeFormBoundary' + crypto.randomBytes(8).toString('hex');
+      const body = [];
+      body.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`));
+      body.push(wavBuffer);
+      body.push(Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`));
+      body.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes\r\n`));
+      body.push(Buffer.from(`--${boundary}--\r\n`));
+
+      const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_KEY}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'User-Agent': 'Mozilla/5.0'
+        },
+        body: Buffer.concat(body)
+      });
+
+      if (res.ok) {
+        const json = await res.json();
+        if (json.text?.trim()) return json.text.trim();
+      } else {
+        const err = await res.text();
+        console.warn('⚠️ OpenAI Whisper error:', res.status, err);
+      }
+    } catch (e) {
+      console.warn('⚠️ Fallo en OpenAI Whisper, pasando a Groq:', e.message);
+    }
+  }
+
+  return await transcribirConGroq(wavBuffer);
+}
+
 // ───────────────────────────────────────────────────────────────
-// 5. CEREBRO IA CON GROQ (LLM)
+// 5. CEREBRO IA (OpenAI GPT-4o-mini o Groq)
 // ───────────────────────────────────────────────────────────────
 async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
-  if (!GROQ_KEY) return 'No tengo configurada mi clave de Groq carnal.';
-
   historial.push({ role: 'user', content: `${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 8) historial.shift();
 
@@ -242,6 +302,45 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     { role: 'system', content: SYSTEM_PROMPT },
     ...historial
   ];
+
+  // 1. Si el usuario configuró OPENAI_API_KEY, usar GPT-4o-mini (mucho más inteligente y natural)
+  if (OPENAI_KEY) {
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_KEY}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages,
+          max_tokens: 120,
+          temperature: 0.85
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        let respuesta = data.choices?.[0]?.message?.content?.trim();
+        if (respuesta && respuesta.length >= 2) {
+          respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
+          logEvent(`🧠 [OpenAI GPT-4o-Mini]: "${respuesta}"`);
+          historial.push({ role: 'assistant', content: respuesta });
+          if (historial.length > 8) historial.shift();
+          return respuesta;
+        }
+      } else {
+        console.warn('⚠️ Error en OpenAI Chat:', res.status, await res.text());
+      }
+    } catch (eOai) {
+      console.warn('⚠️ Falló OpenAI, usando Groq:', eOai.message);
+    }
+  }
+
+  // 2. Fallback a Groq
+  if (!GROQ_KEY) return 'No tengo configurada mi clave de IA carnal.';
 
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -277,7 +376,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     // Limpieza de caracteres no hablables
     respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
 
-    logEvent(`💬 [IA generó respuesta]: "${respuesta}"`);
+    logEvent(`💬 [Groq generó respuesta]: "${respuesta}"`);
 
     historial.push({ role: 'assistant', content: respuesta });
     if (historial.length > 8) historial.shift();
@@ -823,8 +922,8 @@ function configurarEscucha(connection) {
 
       const totalPcm = Buffer.concat(pcmChunks);
 
-      // Si el audio es menor a 0.35s (67200 bytes a 48kHz estéreo 16-bit), descartar ruido
-      if (totalPcm.length < 67200) {
+      // Si el audio es menor a 0.8s (153600 bytes a 48kHz estéreo 16-bit), descartar ruido y clicks
+      if (totalPcm.length < 153600) {
         logEvent(`🔇 [Audio corto de ${username}] Descartado (${totalPcm.length} bytes).`);
         return;
       }
@@ -833,7 +932,7 @@ function configurarEscucha(connection) {
 
       const wavBuffer = createWavBuffer(totalPcm, 48000, 2);
       try {
-        const texto = await transcribirConGroq(wavBuffer);
+        const texto = await transcribirAudio(wavBuffer);
         if (!texto || texto.trim().length < 2) {
           logEvent(`🔇 [Whisper] No se detectó texto comprensible.`);
           return;
