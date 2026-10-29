@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 import { execFile } from 'node:child_process';
 import dotenv from 'dotenv';
 import prism from 'prism-media';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import {
   Client,
   GatewayIntentBits,
@@ -227,28 +228,41 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 6. SÍNTESIS DE VOZ DE JORGE (Edge-TTS)
+// 6. SÍNTESIS DE VOZ DE JORGE (MsEdgeTTS Puro Node.js + Fallback)
 // ───────────────────────────────────────────────────────────────
-function generarAudioJorge(texto, outPath) {
-  return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const cmd = isWindows ? 'py' : 'python3';
-    const args = isWindows
-      ? ['-3.14', '-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath]
-      : ['-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath];
-
-    execFile(cmd, args, (err) => {
-      if (err) {
-        // Fallback a comando directo edge-tts
-        execFile('edge-tts', ['--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath], (err2) => {
-          if (err2) reject(err2);
-          else resolve(outPath);
-        });
-      } else {
-        resolve(outPath);
-      }
+async function generarAudioJorge(texto, outPath) {
+  try {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata('es-MX-JorgeNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+    const { audioStream } = tts.toStream(texto);
+    return await new Promise((resolve, reject) => {
+      const writeStream = fs.createWriteStream(outPath);
+      audioStream.pipe(writeStream);
+      writeStream.on('finish', () => resolve(outPath));
+      writeStream.on('error', reject);
+      audioStream.on('error', reject);
     });
-  });
+  } catch (errNode) {
+    console.warn('⚠️ MsEdgeTTS Node falló, probando fallback Python:', errNode.message);
+    return new Promise((resolve, reject) => {
+      const isWindows = process.platform === 'win32';
+      const cmd = isWindows ? 'py' : 'python3';
+      const args = isWindows
+        ? ['-3.14', '-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath]
+        : ['-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath];
+
+      execFile(cmd, args, (err) => {
+        if (err) {
+          execFile('edge-tts', ['--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath], (err2) => {
+            if (err2) reject(err2);
+            else resolve(outPath);
+          });
+        } else {
+          resolve(outPath);
+        }
+      });
+    });
+  }
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -267,6 +281,37 @@ player.on('error', (err) => {
   botHablando = false;
 });
 
+// Función para generar un stream de silencio PCM (48kHz, 16-bit, stereo)
+// Discord REQUIERE que el bot envíe al menos un paquete de audio UDP
+// para activar el enrutamiento de paquetes de voz de los usuarios hacia el bot.
+function createSilenceStream(durationSeconds = 1) {
+  const stream = new Readable();
+  const frameSize = 960 * 4; // 20ms de audio PCM estéreo
+  const silenceFrame = Buffer.alloc(frameSize);
+  const totalFrames = Math.floor(durationSeconds * 50);
+  let count = 0;
+  stream._read = () => {
+    if (count++ < totalFrames) {
+      stream.push(silenceFrame);
+    } else {
+      stream.push(null);
+    }
+  };
+  return stream;
+}
+
+function kickstartVoice() {
+  try {
+    const silenceResource = createAudioResource(createSilenceStream(1), {
+      inputType: StreamType.Raw
+    });
+    player.play(silenceResource);
+    console.log('📡 [Kickstart UDP] Frame de silencio enviado a Discord para habilitar recepción.');
+  } catch (err) {
+    console.warn('⚠️ Error enviando silencio kickstart:', err.message);
+  }
+}
+
 async function reproducirEnCanal(texto) {
   if (!texto) return;
   botHablando = true;
@@ -283,24 +328,31 @@ async function reproducirEnCanal(texto) {
     console.error('❌ Error generando o reproduciendo voz de Jorge:', err.message);
     botHablando = false;
   } finally {
-    // Borrar temporal en 15s
+    // Borrar temporal después de que termine de sonar
     setTimeout(() => {
       try { fs.unlinkSync(audioFile); } catch {}
-    }, 15000);
+    }, 25000);
   }
 }
 
 // ───────────────────────────────────────────────────────────────
 // 8. ESCUCHA DE USUARIOS (Voz -> Texto -> IA -> Audio)
 // ───────────────────────────────────────────────────────────────
+const activeUsers = new Set();
+
 function configurarEscucha(connection) {
   const receiver = connection.receiver;
 
   receiver.speaking.on('start', (userId) => {
-    if (botHablando) return; // Anti-eco
+    if (botHablando) return; // Anti-eco si Pepe está hablando
+    if (userId === client.user.id) return; // No escucharse a sí mismo
+    if (activeUsers.has(userId)) return; // Evitar suscripciones duplicadas
+    activeUsers.add(userId);
 
     const user = client.users.cache.get(userId);
     const username = user?.displayName || user?.username || 'Compa';
+
+    console.log(`🎤 [Discord] ${username} está hablando...`);
 
     // Suscribirse a este hablante hasta 1 segundo de silencio
     const opusStream = receiver.subscribe(userId, {
@@ -317,11 +369,11 @@ function configurarEscucha(connection) {
     });
 
     opusStream.on('error', (err) => {
-      // Ignorar errores transitorios de red en el stream de voz
+      activeUsers.delete(userId);
     });
 
     opusDecoder.on('error', (err) => {
-      // Ignorar paquetes Opus con jitter o incompletos de Discord sin tumbar el bot
+      // Ignorar paquetes defectuosos sin tumbar el bot
     });
 
     const pcmChunks = [];
@@ -332,16 +384,22 @@ function configurarEscucha(connection) {
     });
 
     opusDecoder.on('end', async () => {
+      activeUsers.delete(userId);
       if (botHablando) return;
       const totalPcm = Buffer.concat(pcmChunks);
 
-      // Si el audio es menor a 0.5s de duración, ignorar
-      if (totalPcm.length < 48000 * 2 * 2 * 0.5) return;
+      // Si el audio es menor a 0.5s de duración (96000 bytes a 48kHz estéreo), descartar ruido
+      if (totalPcm.length < 96000) return;
+
+      console.log(`📦 [Audio recibido] ${username}: ${(totalPcm.length / 192000).toFixed(1)}s de voz. Transcribiendo con Groq Whisper...`);
 
       const wavBuffer = createWavBuffer(totalPcm, 48000, 2);
       try {
         const texto = await transcribirConGroq(wavBuffer);
-        if (!texto || texto.length < 3) return;
+        if (!texto || texto.trim().length < 2) {
+          console.log('🔇 [Whisper] No se detectó texto claro en la grabación.');
+          return;
+        }
 
         console.log(`👂 [${username} dijo]: "${texto}"`);
 
@@ -349,9 +407,11 @@ function configurarEscucha(connection) {
 
         // Responder si el modo continuo está activo O si dijeron "pepe"
         if (modoCharlaContinua || esParaPepe) {
-          console.log(`🧠 [Pepe procesando respuesta para ${username}]...`);
+          console.log(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username);
           await reproducirEnCanal(respuesta);
+        } else {
+          console.log(`ℹ️ [Ignorado] Modo continuo apagado y no dijeron 'Pepe'.`);
         }
       } catch (err) {
         console.warn('⚠️ Error procesando voz recibida:', err.message);
@@ -384,6 +444,7 @@ async function conectarCanal(channel) {
 
     connection.on(VoiceConnectionStatus.Ready, () => {
       console.log(`✅ [Voz Activa] Pepe Rey asegurado en "${channel.name}". Racha y oído activos.`);
+      kickstartVoice();
     });
 
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
@@ -456,6 +517,15 @@ client.once('ready', async () => {
     status: 'online'
   });
 
+  try {
+    const testPath = path.join(CACHE_DIR, 'test_startup.mp3');
+    await generarAudioJorge('Prueba de voz Jorge lista', testPath);
+    try { fs.unlinkSync(testPath); } catch {}
+    console.log('✅ [Voz de Jorge]: Lista y verificada en Node.js.');
+  } catch (err) {
+    console.error('⚠️ [Voz de Jorge]: Falla en auto-prueba:', err.message);
+  }
+
   for (const [, guild] of client.guilds.cache) {
     try {
       await guild.commands.set(COMANDOS);
@@ -493,6 +563,12 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'pepe') {
     const modo = interaction.options.getString('modo');
     modoCharlaContinua = (modo === 'on');
+
+    if (modoCharlaContinua) {
+      reproducirEnCanal('Qué onda banda, ya ando al tiro, los escucho.');
+    } else {
+      reproducirEnCanal('Simón compas, me pongo en modo tranquilo. Si me ocupan, nada más digan Pepe.');
+    }
 
     const embed = new EmbedBuilder()
       .setColor(modoCharlaContinua ? 0x00FF88 : 0xFFAA00)
