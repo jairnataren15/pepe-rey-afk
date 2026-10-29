@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Readable } from 'node:stream';
-import { execFile } from 'node:child_process';
+import { Readable, PassThrough } from 'node:stream';
+import { execFile, spawn } from 'node:child_process';
 import dotenv from 'dotenv';
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
@@ -72,16 +72,22 @@ if (!TOKEN) {
 // ───────────────────────────────────────────────────────────────
 // CONFIGURACIÓN DE PERSONALIDAD & MEMORIA
 // ───────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, sarcástico y carrilludo del gremio Noxz en Aion 2. Estás en la llamada de voz de Discord con tu grupito de compas.
+const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, carrilludo y cagón de la legión en Aion 2. Estás en canal de voz en Discord cotorreando con tus compas mientras juegan.
 
 PERSONALIDAD Y TONO:
-- Eres mamón, ácido, con humor negro gamer de amigos y carrilla pesada pero divertida. Cero filtros de asistente corporativo.
-- Te burlas con ganas de los mancos que la cagan en la raid, de los que se mueren por noobs en Abyss o PvP, y de las quejas pendejas. Les dices mancos, conos, muertos de hambre, manquísimos o que desinstalen el juego si la riegan.
-- Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls).
-- Hablas con jerga mexicana callejera y natural de Discord (wey, no mames, cállate el hocico, qué manco eres, no seas payaso, qué pedo, chelas, al chile, te faltan manos, qué mamada).
-- NUNCA des sermones ni sermonees sobre jugar bien. Si te piden música o volumen, no opines de la canción, limítate a tirar carrilla corta.
+- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta burlarte de los fails, de los mancos que wipean en las raids, de los que se mueren por noobs en Abyss o PvP, de los que lloran y de las preguntas pendejas.
+- Les dices mancos, conos con patas, muertos de hambre, manquísimos, mancuernas, que desinstalen el juego o que vendan la PC si la riegan.
+- Cero sermones morales y cero respuestas de robot amable o corporativo.
+- Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
+- Hablas con jerga mexicana callejera y natural de Discord (wey, no mames, cállate el hocico, qué manco eres, no seas payaso, qué pedo, chelas, al chile, te faltan manos, qué mamada, ni pa estorbar sirves).
 
-REGLAS DE RESPUESTA:
+REGLA SUPREMA DE MÚSICA:
+Si el usuario te dice o insinúa CUALQUIER COSA pidiendo que pongas, reproduzcas, busques o toques una canción, artista, música o rola (ej: "ponte la de...", "pon música...", "toca algo de...", "ponte wifey", "suéltate una de aria bela"):
+NO RESPONDAS NADA CONVERSACIONAL NI OPINES SOBRE LA ROLA NI SOBRE LA RAID.
+Tu respuesta DEBE ser ÚNICAMENTE:
+[BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>]
+
+REGLAS DE RESPUESTA DE CHARLA:
 1. Máximo 1 o 2 oraciones cortas, directas y con remate cómico mamón (se reproduce en voz alta por TTS en el canal).
 2. Sé afilado, variado y espontáneo. Cero respuestas de robot amable.
 3. NUNCA uses viñetas, negritas ni asteriscos.`;
@@ -299,8 +305,45 @@ async function transcribirAudio(wavBuffer) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 5. CEREBRO IA (OpenAI GPT-4o-mini o Groq)
+// 5. CEREBRO IA (OpenAI GPT-4o-mini o Groq) & FILTRADO INTELIGENTE
 // ───────────────────────────────────────────────────────────────
+function limpiarQueryBusqueda(texto) {
+  let q = (texto || '').toLowerCase()
+    .replace(/[¿?¡!.,;:\"'()[\]]/g, ' ')
+    // Corrección fonética de Whisper para nombres y canciones frecuentes
+    .replace(/\b(?:waifi|wifi|güaifi|guaifi)\b/gi, 'wifey')
+    .replace(/\b(?:aribela|arivela|aria bella|ariveya|aribella)\b/gi, 'aria bela')
+    .replace(/\b(?:pilate|pilats|pirates)\b/gi, 'pilates')
+    // Eliminar muletillas y llamadas al bot
+    .replace(/\b(?:pepe|oye|hey|favor|porfa|por\s*favor|carnal|paro|wey|güey|mano)\b/gi, ' ')
+    // Eliminar verbos de búsqueda o reproducción
+    .replace(/\b(?:pon(?:te|me|nos)?|busca(?:te|me)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|m[eé]tele|canta(?:te)?|c[oó]loca|suena)\b/gi, ' ')
+    // Eliminar sustantivos de música
+    .replace(/\b(?:m[uú]sica|canci[oó]n|canciones|rolas?|temas?|pista|video|audio)\b/gi, ' ')
+    // Eliminar preposiciones y artículos
+    .replace(/\b(?:de|la|el|las|los|un|una|unos|unas|algo|que|esta|este|ese|esa|para|en)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return q;
+}
+
+function procesarRespuestaIA(raw) {
+  if (!raw || raw.length < 2) return null;
+
+  if (raw.includes('[BUSCAR_MUSICA:') || /BUSCAR_MUSICA:\s*/i.test(raw)) {
+    const m = raw.match(/(?:\[)?BUSCAR_MUSICA:\s*(.+?)(?:\]|$)/i);
+    const cancion = m ? m[1].trim() : raw.replace(/\[?BUSCAR_MUSICA:\s*/i, '').replace(/\]/g, '').trim();
+    const queryLimpia = limpiarQueryBusqueda(cancion);
+    logEvent(`🎯 [IA detectó intención de música]: "${cancion}" -> "${queryLimpia}"`);
+    const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
+    buscarYDarOpciones(queryLimpia || cancion, canalTexto);
+    return null; // Interceptado para no hablar texto de plantilla por TTS
+  }
+
+  return raw.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ').trim();
+}
+
 async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
   historial.push({ role: 'user', content: `${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 8) historial.shift();
@@ -310,7 +353,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     ...historial
   ];
 
-  // 1. Si el usuario configuró OPENAI_API_KEY, usar GPT-4o-mini (mucho más inteligente y natural)
+  // 1. Si el usuario configuró OPENAI_API_KEY, usar GPT-4o-mini (mucho más inteligente, rápido y económico)
   if (OPENAI_KEY) {
     try {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -330,14 +373,13 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
 
       if (res.ok) {
         const data = await res.json();
-        let respuesta = data.choices?.[0]?.message?.content?.trim();
-        if (respuesta && respuesta.length >= 2) {
-          respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
-          logEvent(`🧠 [OpenAI GPT-4o-Mini]: "${respuesta}"`);
-          historial.push({ role: 'assistant', content: respuesta });
-          if (historial.length > 8) historial.shift();
-          return respuesta;
-        }
+        const raw = data.choices?.[0]?.message?.content?.trim();
+        const limpia = procesarRespuestaIA(raw);
+        if (limpia === null) return null; // Intención de música detectada
+        logEvent(`🧠 [OpenAI GPT-4o-Mini]: "${limpia}"`);
+        historial.push({ role: 'assistant', content: limpia });
+        if (historial.length > 8) historial.shift();
+        return limpia;
       } else {
         console.warn('⚠️ Error en OpenAI Chat:', res.status, await res.text());
       }
@@ -346,7 +388,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     }
   }
 
-  // 2. Fallback a Groq
+  // 2. Fallback a Groq si no hay OpenAI o falló
   if (!GROQ_KEY) return 'No tengo configurada mi clave de IA carnal.';
 
   try {
@@ -373,22 +415,19 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     }
 
     const data = await res.json();
-    let respuesta = data.choices?.[0]?.message?.content?.trim();
-
-    if (!respuesta || respuesta.length < 2) {
-      console.warn('⚠️ Respuesta de Groq vacía, usando fallback natural.');
-      respuesta = 'No te alcancé a escuchar bien carnal, ¿qué decías?';
+    let raw = data.choices?.[0]?.message?.content?.trim();
+    if (!raw || raw.length < 2) {
+      raw = 'No te alcancé a escuchar bien carnal, ¿qué decías?';
     }
 
-    // Limpieza de caracteres no hablables
-    respuesta = respuesta.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ');
+    const limpia = procesarRespuestaIA(raw);
+    if (limpia === null) return null;
 
-    logEvent(`💬 [Groq generó respuesta]: "${respuesta}"`);
-
-    historial.push({ role: 'assistant', content: respuesta });
+    logEvent(`💬 [Groq generó respuesta]: "${limpia}"`);
+    historial.push({ role: 'assistant', content: limpia });
     if (historial.length > 8) historial.shift();
 
-    return respuesta;
+    return limpia;
   } catch (err) {
     logEvent(`❌ Error llamando a Groq: ${err.message}`);
     return 'Se me fue la onda un segundo, carnal.';
@@ -443,7 +482,8 @@ let recursoMusica = null; // AudioResource con inlineVolume
 let opcionesMusica = []; // Top 3 opciones encontradas
 let esperandoSeleccion = false;
 let timeoutSeleccion = null;
-let modoAntesDeMusica = true; // Para restaurar modo charla continua al terminar la canción
+let modoAntesDeMusica = false; // Solo restaurar si estaba en ON antes de poner música
+let procesoYtDlp = null; // Proceso hijo para streaming directo sin bloqueo
 
 // Reproductor exclusivo para la voz de Pepe
 const voicePlayer = createAudioPlayer({
@@ -476,10 +516,17 @@ musicPlayer.on(AudioPlayerStatus.Idle, () => {
   cancionActual = null;
   recursoMusica = null;
 
-  // Restaurar automáticamente el modo charla continua cuando termine la música
+  if (procesoYtDlp) {
+    try { procesoYtDlp.kill('SIGTERM'); } catch {}
+    procesoYtDlp = null;
+  }
+
+  // Restaurar automáticamente el modo charla continua solo si estaba activo antes
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
-    logEvent('🟢 [Música Terminada]: Modo charla continua restaurado automáticamente.');
+    logEvent('🟢 [Música Terminada]: Modo charla continua restaurado.');
+  } else {
+    modoCharlaContinua = false;
   }
 });
 
@@ -488,9 +535,16 @@ musicPlayer.on('error', (err) => {
   cancionActual = null;
   recursoMusica = null;
 
+  if (procesoYtDlp) {
+    try { procesoYtDlp.kill('SIGTERM'); } catch {}
+    procesoYtDlp = null;
+  }
+
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
     logEvent('🟢 [Música Terminada tras error]: Modo charla continua restaurado.');
+  } else {
+    modoCharlaContinua = false;
   }
 });
 
@@ -535,62 +589,79 @@ function getExecutableYtDlp() {
   return 'yt-dlp';
 }
 
-// Extrae el enlace HTTPS directo de audio con yt-dlp usando cookies y solver de JS
-function obtenerUrlConYtDlp(videoUrl) {
+// Inicia streaming directo de audio en stdout desde yt-dlp usando cookies
+function crearStreamYtDlp(videoUrl) {
   return new Promise((resolve, reject) => {
-    const bin = getExecutableYtDlp();
-    const isWindows = process.platform === 'win32';
-    const isLocal = bin.includes(path.sep);
-    const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
-    const hasCookies = fs.existsSync(cookiesPath);
-
-    const baseArgs = [
-      '-g',
-      '-f', 'bestaudio/best',
-      '--no-playlist'
-    ];
-
-    if (hasCookies) {
-      baseArgs.push('--cookies', cookiesPath);
-    } else {
-      baseArgs.push('--extractor-args', 'youtube:player_client=android,web');
-    }
-
-    baseArgs.push(videoUrl);
-
-    const tryExec = (command, args, next) => {
-      execFile(command, args, { timeout: 35000 }, (err, stdout) => {
-        if (!err && stdout && stdout.trim().startsWith('http')) {
-          const directUrl = stdout.trim().split('\n')[0].trim();
-          resolve(directUrl);
-        } else {
-          next(err || new Error('No se obtuvo URL de audio'));
-        }
-      });
-    };
-
-    if (isLocal) {
-      tryExec(bin, baseArgs, (err1) => {
-        if (isWindows) {
-          tryExec('py', ['-3.14', '-m', 'yt_dlp', ...baseArgs], (err2) => {
-            tryExec('yt-dlp', baseArgs, (err3) => reject(err1 || err2 || err3));
-          });
-        } else {
-          tryExec('python3', ['-m', 'yt_dlp', ...baseArgs], (err2) => {
-            tryExec('yt-dlp', baseArgs, (err3) => reject(err1 || err2 || err3));
-          });
-        }
-      });
-    } else {
-      if (isWindows) {
-        tryExec('py', ['-3.14', '-m', 'yt_dlp', ...baseArgs], (err1) => {
-          tryExec('yt-dlp', baseArgs, reject);
-        });
-      } else {
-        tryExec(bin, baseArgs, (err1) => {
-          tryExec('python3', ['-m', 'yt_dlp', ...baseArgs], reject);
-        });
+    try {
+      if (procesoYtDlp) {
+        try { procesoYtDlp.kill('SIGTERM'); } catch {}
+        procesoYtDlp = null;
       }
+
+      inicializarCookies();
+      const bin = getExecutableYtDlp();
+      const isWindows = process.platform === 'win32';
+      const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
+      const hasCookies = fs.existsSync(cookiesPath);
+
+      const baseArgs = [
+        '-f', 'bestaudio/best',
+        '--no-playlist',
+        '-o', '-'
+      ];
+
+      if (hasCookies) {
+        baseArgs.push('--cookies', cookiesPath);
+      } else {
+        baseArgs.push('--extractor-args', 'youtube:player_client=android,web');
+      }
+
+      baseArgs.push(videoUrl);
+
+      let cmd = bin;
+      let args = baseArgs;
+
+      if (isWindows) {
+        cmd = 'py';
+        args = ['-3.14', '-m', 'yt_dlp', ...baseArgs];
+      }
+
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      procesoYtDlp = child;
+
+      let started = false;
+      let stderrOutput = '';
+
+      child.stderr.on('data', (d) => {
+        stderrOutput += d.toString();
+      });
+
+      child.stdout.once('data', (firstChunk) => {
+        started = true;
+        const combined = new PassThrough();
+        combined.write(firstChunk);
+        child.stdout.pipe(combined);
+        resolve(combined);
+      });
+
+      child.on('error', (err) => {
+        if (!started) reject(err);
+      });
+
+      child.on('close', (code) => {
+        if (!started) {
+          reject(new Error(`yt-dlp terminó con código ${code}: ${stderrOutput.slice(-150)}`));
+        }
+      });
+
+      setTimeout(() => {
+        if (!started) {
+          try { child.kill('SIGTERM'); } catch {}
+          reject(new Error('yt-dlp tardó más de 18s en soltar audio'));
+        }
+      }, 18000);
+    } catch (err) {
+      reject(err);
     }
   });
 }
@@ -724,11 +795,11 @@ async function reproducirCancion(videoInfo) {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
 
-  // Al poner música: pausar modo escucha libre y cambiar a solo mención de "Pepe"
+  // Al poner música: recordar si estaba en ON y poner temporalmente en OFF (solo responder a "Pepe")
+  modoAntesDeMusica = modoCharlaContinua;
   if (modoCharlaContinua) {
-    modoAntesDeMusica = true;
     modoCharlaContinua = false;
-    logEvent('🔒 [Música Activa]: Cambiando automáticamente a modo mención (solo responde si dicen Pepe).');
+    logEvent('🔒 [Música Activa]: Cambiando temporalmente a modo mención (solo responde si dicen Pepe).');
   }
 
   try {
@@ -738,39 +809,45 @@ async function reproducirCancion(videoInfo) {
 
     await reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`);
 
-    let streamOrUrl = null;
+    let stream = null;
     let inputType = StreamType.Arbitrary;
+
+    // 1. Streaming directo desde yt-dlp usando cookies y stdout
     try {
-      streamOrUrl = await obtenerUrlConYtDlp(videoInfo.url);
-      logEvent(`📡 [Audio YouTube]: Enlace directo obtenido exitosamente con yt-dlp`);
+      stream = await crearStreamYtDlp(videoInfo.url);
+      logEvent(`📡 [Audio YouTube]: Streaming directo con yt-dlp iniciado exitosamente`);
     } catch (eYt) {
       logEvent(`⚠️ YouTube falló (${eYt.message.slice(0, 90)}...), buscando en SoundCloud...`);
+
+      // 2. Fallback a SoundCloud con play-dl
       try {
         const cid = await play.getFreeClientID();
         await play.setToken({ soundcloud: { client_id: cid } });
         const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 1 });
-        if (scResults && scResults[0]) {
-          const trackUrl = scResults[0].permalink || scResults[0].url;
+        const trackUrl = scResults?.[0]?.permalink || scResults?.[0]?.url;
+        if (trackUrl) {
           const scStream = await play.stream(trackUrl);
-          streamOrUrl = scStream.stream;
+          stream = scStream.stream;
           inputType = scStream.type;
-          logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${scResults[0].name}"`);
+          logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${scResults[0].name || trackUrl}"`);
         } else {
           throw new Error('No encontrado en SoundCloud');
         }
       } catch (eSc) {
         logEvent(`⚠️ SoundCloud falló (${eSc.message}), probando ytdl interno...`);
-        streamOrUrl = ytdl.download(videoInfo.url, {
+
+        // 3. Fallback a ytdl-core
+        stream = ytdl.download(videoInfo.url, {
           filter: { hasAudio: true, hasVideo: false },
           quality: 'highestaudio'
         });
-        streamOrUrl.on('error', (errStream) => {
+        stream.on('error', (errStream) => {
           logEvent(`❌ [ytdl stream error]: ${errStream.message}`);
         });
       }
     }
 
-    recursoMusica = createAudioResource(streamOrUrl, {
+    recursoMusica = createAudioResource(stream, {
       inputType: inputType,
       inlineVolume: true
     });
@@ -782,7 +859,7 @@ async function reproducirCancion(videoInfo) {
     musicPlayer.play(recursoMusica);
     logEvent(`▶️ [Reproduciendo]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
   } catch (err) {
-    logEvent(`❌ Error reproduciendo audio de YouTube: ${err.message}`);
+    logEvent(`❌ Error reproduciendo audio: ${err.message}`);
     detenerMusica();
     await reproducirVozPepe('No se pudo jalar esa rola carnal, YouTube no quiso soltar el audio.');
   }
@@ -793,11 +870,19 @@ function detenerMusica() {
   recursoMusica = null;
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
+
+  if (procesoYtDlp) {
+    try { procesoYtDlp.kill('SIGTERM'); } catch {}
+    procesoYtDlp = null;
+  }
+
   try { musicPlayer.stop(); } catch {}
 
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
     logEvent('🟢 [Música Detenida]: Modo charla continua restaurado.');
+  } else {
+    modoCharlaContinua = false;
   }
 }
 
@@ -864,14 +949,12 @@ function parseComandoVoz(texto) {
   }
 
   // Búsqueda de canciones
-  const mSearch = t.match(/(?:pepe\s+)?(?:pon(?:me)?|busca|reproduce|toca|c[oó]loca|canta|suena)\s+(?:esta\s+|una\s+|un\s+|la\s+|el\s+|las\s+|los\s+)?(?:m[uú]sica\s+|canci[oó]n\s+|rola\s+|tema\s+)?(?:de\s+|con\s+)?(.+)/i);
-  if (mSearch) {
-    let q = mSearch[1]
-      .replace(/^(?:de\s+|la\s+|el\s+|una\s+|un\s+|a\s+)/i, '')
-      .replace(/\s+(?:por\s*fa(?:vor)?|paro|wey|g[uü]ey|carnal|pepe|porfa)$/i, '')
-      .trim();
+  const tieneVerboMusica = /\b(?:pon(?:te|me|nos)?|busca(?:te|me)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|m[eé]tele|canta(?:te)?|c[oó]loca|suena)\b/i.test(t);
+  const tienePalabraMusica = /\b(?:m[uú]sica|canci[oó]n|canciones|rolas?|temas?|pista)\b/i.test(t);
 
-    if (q.length > 1 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
+  if (tieneVerboMusica || tienePalabraMusica) {
+    const q = limpiarQueryBusqueda(texto);
+    if (q && q.length >= 2 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
       return { type: 'BUSCAR_MUSICA', query: q };
     }
   }
@@ -1032,7 +1115,9 @@ function configurarEscucha(connection) {
         if (modoCharlaContinua || esParaPepe) {
           logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username);
-          await reproducirVozPepe(respuesta);
+          if (respuesta) {
+            await reproducirVozPepe(respuesta);
+          }
         } else {
           logEvent(`ℹ️ [Ignorado] Modo continuo apagado y no dijeron 'Pepe'.`);
         }
