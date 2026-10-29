@@ -347,7 +347,7 @@ function limpiarQueryBusqueda(texto) {
 async function buscarEnInternet(consulta) {
   const q = (consulta || '')
     .replace(/_/g, ' ')
-    .replace(/\bion\s*2\b/gi, 'Aion 2')
+    .replace(/\bion[-\s]*2\b/gi, 'Aion 2')
     .replace(/\s+/g, ' ')
     .trim();
   if (!q) return 'No se especificó qué buscar.';
@@ -355,45 +355,57 @@ async function buscarEnInternet(consulta) {
 
   const fragmentos = [];
 
-  // 1. Búsqueda web en tiempo real (DuckDuckGo HTML)
+  // 1. Búsqueda Web vía Jina Reader Proxy + DuckDuckGo (0% bloqueo de IP en Render/Datacenter)
   try {
-    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
+    const jinaUrl = `https://r.jina.ai/https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+    const resJ = await fetch(jinaUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
+        'Accept': 'text/plain',
+        'User-Agent': 'Mozilla/5.0'
       }
     });
-    if (res.ok) {
-      const html = await res.text();
-      const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi)]
-        .map(m => m[1]
-          .replace(/<[^>]+>/g, '')
-          .replace(/&quot;/g, '"')
-          .replace(/&#x27;/g, "'")
-          .replace(/&amp;/g, '&')
+    if (resJ.ok) {
+      const md = await resJ.text();
+      // Extraer párrafos descriptivos limpios del Markdown de resultados
+      const lineas = md.split('\n')
+        .map(l => l
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+          .replace(/\*\*+/g, ' ')
+          .replace(/[*#>_`]/g, '')
           .replace(/\s+/g, ' ')
           .trim()
         )
-        .filter(Boolean)
-        .slice(0, 4);
-      fragmentos.push(...snippets);
+        .filter(l => l.length > 55 && !l.startsWith('http') && !/^(Title|URL Source|Markdown Content|DuckDuckGo)/i.test(l));
+      fragmentos.push(...lineas.slice(0, 6));
     }
-  } catch (err) {
-    logEvent(`⚠️ [Web Search Warning]: ${err.message}`);
+  } catch (errJ) {
+    logEvent(`⚠️ [Jina Web Search Warning]: ${errJ.message}`);
   }
 
-  // 2. Respaldo / complemento en Wikipedia Español si hay pocos resultados
+  // 2. Respaldo directo DuckDuckGo HTML si Jina trajo pocos fragmentos
   if (fragmentos.length < 2) {
     try {
-      const wikiUrl = `https://es.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=&format=json&srlimit=3`;
-      const resW = await fetch(wikiUrl, { headers: { 'User-Agent': 'PepeReyBot/1.0' } });
-      if (resW.ok) {
-        const dataW = await resW.json();
-        const items = dataW?.query?.search || [];
-        for (const it of items) {
-          const limpio = (it.snippet || '').replace(/<[^>]+>/g, '').trim();
-          if (limpio) fragmentos.push(`${it.title}: ${limpio}`);
+      const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
         }
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi)]
+          .map(m => m[1]
+            .replace(/<[^>]+>/g, '')
+            .replace(/&quot;/g, '"')
+            .replace(/&#x27;/g, "'")
+            .replace(/&amp;/g, '&')
+            .replace(/\s+/g, ' ')
+            .trim()
+          )
+          .filter(Boolean)
+          .slice(0, 4);
+        fragmentos.push(...snippets);
       }
     } catch {}
   }
@@ -402,8 +414,8 @@ async function buscarEnInternet(consulta) {
     return 'No salieron resultados claros en internet para esa búsqueda.';
   }
 
-  logEvent(`✅ [Resultados Web encontrados]: ${fragmentos.length} fragmentos.`);
-  return fragmentos.join('\n- ');
+  logEvent(`✅ [Resultados Web encontrados]: ${fragmentos.length} fragmentos reales.`);
+  return fragmentos.slice(0, 5).join('\n- ');
 }
 
 async function llamarChatCompletion(messages) {
