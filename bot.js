@@ -14,6 +14,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import yts from 'yt-search';
 import { Ytdl } from '@distube/ytdl-core';
+import { asegurarYtDlp } from './install-ytdlp.js';
 
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -355,6 +356,10 @@ voicePlayer.on('error', (err) => {
   botHablando = false;
 });
 
+musicPlayer.on('stateChange', (oldState, newState) => {
+  logEvent(`🎵 [MusicPlayer Estado]: ${oldState.status} -> ${newState.status}`);
+});
+
 musicPlayer.on(AudioPlayerStatus.Playing, () => {
   logEvent(`🎶 [MusicPlayer] Tocando "${cancionActual?.title || 'Canción'}" al ${Math.round(volumenMusica * 100)}% de volumen`);
 });
@@ -402,25 +407,61 @@ function ajustarVolumen(nuevoNivel) {
   return pct;
 }
 
+function getExecutableYtDlp() {
+  const localBin = path.resolve(process.cwd(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+  if (fs.existsSync(localBin)) return localBin;
+  return 'yt-dlp';
+}
+
 // Extrae el enlace HTTPS directo de audio con yt-dlp
 function obtenerUrlConYtDlp(videoUrl) {
   return new Promise((resolve, reject) => {
+    const bin = getExecutableYtDlp();
     const isWindows = process.platform === 'win32';
-    const cmd = isWindows ? 'py' : 'python3';
-    const args = isWindows
-      ? ['-3.14', '-m', 'yt_dlp', '-g', '-f', 'bestaudio', videoUrl]
-      : ['-m', 'yt_dlp', '-g', '-f', 'bestaudio', videoUrl];
+    const isLocal = bin.includes(path.sep);
 
-    execFile(cmd, args, { timeout: 15000 }, (err, stdout) => {
-      if (err) {
-        execFile('yt-dlp', ['-g', '-f', 'bestaudio', videoUrl], { timeout: 15000 }, (err2, stdout2) => {
-          if (err2) reject(err2);
-          else resolve(stdout2.trim());
+    const runArgs = [
+      '-g',
+      '-f', 'bestaudio/best',
+      '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android,web',
+      videoUrl
+    ];
+
+    const tryExec = (command, args, next) => {
+      execFile(command, args, { timeout: 25000 }, (err, stdout) => {
+        if (!err && stdout && stdout.trim().startsWith('http')) {
+          const directUrl = stdout.trim().split('\n')[0].trim();
+          resolve(directUrl);
+        } else {
+          next(err || new Error('No se obtuvo URL de audio'));
+        }
+      });
+    };
+
+    if (isLocal) {
+      tryExec(bin, runArgs, (err1) => {
+        if (isWindows) {
+          tryExec('py', ['-3.14', '-m', 'yt_dlp', ...runArgs], (err2) => {
+            tryExec('yt-dlp', runArgs, (err3) => reject(err1 || err2 || err3));
+          });
+        } else {
+          tryExec('python3', ['-m', 'yt_dlp', ...runArgs], (err2) => {
+            tryExec('yt-dlp', runArgs, (err3) => reject(err1 || err2 || err3));
+          });
+        }
+      });
+    } else {
+      if (isWindows) {
+        tryExec('py', ['-3.14', '-m', 'yt_dlp', ...runArgs], (err1) => {
+          tryExec('yt-dlp', runArgs, reject);
         });
       } else {
-        resolve(stdout.trim());
+        tryExec(bin, runArgs, (err1) => {
+          tryExec('python3', ['-m', 'yt_dlp', ...runArgs], reject);
+        });
       }
-    });
+    }
   });
 }
 
@@ -431,8 +472,8 @@ async function reproducirVozPepe(texto) {
 
   const audioFile = path.join(CACHE_DIR, `pepe_${Date.now()}.mp3`);
   try {
-    const hayMusica = musicPlayer.state.status === AudioPlayerStatus.Playing;
-    if (hayMusica) {
+    const hayMusica = cancionActual !== null;
+    if (hayMusica && musicPlayer.state.status === AudioPlayerStatus.Playing) {
       musicPlayer.pause();
     }
 
@@ -459,7 +500,7 @@ async function reproducirVozPepe(texto) {
       voicePlayer.on('error', finish);
     });
 
-    // Si había música sonando previamente, restaurar suscripción y despausar
+    // Si había música sonando previamente, restaurar suscripción y despausar SIEMPRE
     if (hayMusica && conexionActual && cancionActual) {
       conexionActual.subscribe(musicPlayer);
       musicPlayer.unpause();
@@ -570,12 +611,15 @@ async function reproducirCancion(videoInfo) {
     let streamOrUrl = null;
     try {
       streamOrUrl = await obtenerUrlConYtDlp(videoInfo.url);
-      logEvent('📡 [Audio YouTube]: Enlace directo obtenido exitosamente con yt-dlp');
+      logEvent(`📡 [Audio YouTube]: Enlace directo obtenido exitosamente con yt-dlp`);
     } catch (eYt) {
       logEvent(`⚠️ yt-dlp falló, probando ytdl interno: ${eYt.message}`);
       streamOrUrl = ytdl.download(videoInfo.url, {
         filter: { hasAudio: true, hasVideo: false },
         quality: 'highestaudio'
+      });
+      streamOrUrl.on('error', (errStream) => {
+        logEvent(`❌ [ytdl stream error]: ${errStream.message}`);
       });
     }
 
@@ -592,6 +636,7 @@ async function reproducirCancion(videoInfo) {
     logEvent(`▶️ [Reproduciendo]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
   } catch (err) {
     logEvent(`❌ Error reproduciendo audio de YouTube: ${err.message}`);
+    detenerMusica();
     await reproducirVozPepe('No se pudo jalar esa rola carnal, YouTube no quiso soltar el audio.');
   }
 }
@@ -601,7 +646,7 @@ function detenerMusica() {
   recursoMusica = null;
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
-  musicPlayer.stop();
+  try { musicPlayer.stop(); } catch {}
 
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
@@ -642,17 +687,17 @@ function parseComandoVoz(texto) {
 
   // Si estábamos esperando selección de canción
   if (esperandoSeleccion) {
-    if (/\b(1|uno|primera|primer|opci[oó]n 1)\b/i.test(t)) return { type: 'SELECCION', idx: 0 };
-    if (/\b(2|dos|segunda|segundo|opci[oó]n 2)\b/i.test(t)) return { type: 'SELECCION', idx: 1 };
-    if (/\b(3|tres|tercera|tercer|opci[oó]n 3)\b/i.test(t)) return { type: 'SELECCION', idx: 2 };
-    if (/\b(cancela|cancelar|ninguna|olv[ií]dalo|no|ya no)\b/i.test(t)) return { type: 'CANCELAR_SELECCION' };
+    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:1|uno|una|primera|primer)\b/i.test(t)) return { type: 'SELECCION', idx: 0 };
+    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:2|dos|segunda|segundo)\b/i.test(t)) return { type: 'SELECCION', idx: 1 };
+    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:3|tres|tercera|tercer)\b/i.test(t)) return { type: 'SELECCION', idx: 2 };
+    if (/\b(cancela|cancelar|ninguna|olv[ií]dalo|ya\s*no|no\s*pongas\s*nada)\b/i.test(t)) return { type: 'CANCELAR_SELECCION' };
   }
 
   // Volumen
-  if (/(sube|s[uú]bele|aumenta|m[aá]s)\s*(al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
+  if (/(?:sube|s[uú]bele|aumenta|m[aá]s)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
     return { type: 'VOLUMEN_SUBIR' };
   }
-  if (/(baja|b[aá]jale|disminuye|menos)\s*(al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*bajo/i.test(t)) {
+  if (/(?:baja|b[aá]jale|disminuye|menos)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*bajo/i.test(t)) {
     return { type: 'VOLUMEN_BAJAR' };
   }
   const mVol = t.match(/volumen\s*(?:al|a)?\s*(\d{1,3})/i);
@@ -661,20 +706,24 @@ function parseComandoVoz(texto) {
   }
 
   // Control de reproducción
-  if (/(para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
+  if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t) || /\b(?:pepe\s+)?(?:c[aá]llate|apaga\s*la\s*m[uú]sica)\b/i.test(t)) {
     return { type: 'MUSICA_STOP' };
   }
-  if (/(pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
+  if (/(?:pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
     return { type: 'MUSICA_PAUSE' };
   }
-  if (/(despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
+  if (/(?:despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
     return { type: 'MUSICA_RESUME' };
   }
 
   // Búsqueda de canciones
-  const mSearch = t.match(/(?:pepe\s+)?(?:pon|busca|reproduce|toca|c[oó]loca)\s+(?:esta\s+m[uú]sica\s+|esta\s+canci[oó]n\s+|esta\s+rola\s+|una\s+canci[oó]n\s+|una\s+rola\s+|una\s+m[uú]sica\s+|la\s+canci[oó]n\s+|la\s+rola\s+|la\s+m[uú]sica\s+|m[uú]sica\s+|canci[oó]n\s+|rola\s+)?(?:de\s+)?(.+)/i);
+  const mSearch = t.match(/(?:pepe\s+)?(?:pon(?:me)?|busca|reproduce|toca|c[oó]loca|canta|suena)\s+(?:esta\s+|una\s+|un\s+|la\s+|el\s+|las\s+|los\s+)?(?:m[uú]sica\s+|canci[oó]n\s+|rola\s+|tema\s+)?(?:de\s+|con\s+)?(.+)/i);
   if (mSearch) {
-    const q = mSearch[1].replace(/^(?:de|la|el|una|un)\s+/i, '').trim();
+    let q = mSearch[1]
+      .replace(/^(?:de\s+|la\s+|el\s+|una\s+|un\s+|a\s+)/i, '')
+      .replace(/\s+(?:por\s*fa(?:vor)?|paro|wey|g[uü]ey|carnal|pepe|porfa)$/i, '')
+      .trim();
+
     if (q.length > 1 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
       return { type: 'BUSCAR_MUSICA', query: q };
     }
@@ -693,7 +742,6 @@ function configurarEscucha(connection) {
   logEvent('👂 [Oído Activado] Configurando receptor de voz en el canal.');
 
   receiver.speaking.on('start', (userId) => {
-    if (botHablando) return; // Anti-eco si Pepe está hablando
     if (userId === client.user.id) return; // No escucharse a sí mismo
     if (activeUsers.has(userId)) return; // Ya estamos grabando a este usuario
     activeUsers.add(userId);
@@ -731,11 +779,10 @@ function configurarEscucha(connection) {
       try { opusStream.destroy(); } catch {}
       try { opusDecoder.destroy(); } catch {}
 
-      if (botHablando) return;
       const totalPcm = Buffer.concat(pcmChunks);
 
-      // Si el audio es menor a 0.4s (76800 bytes a 48kHz estéreo 16-bit), descartar ruido
-      if (totalPcm.length < 76800) {
+      // Si el audio es menor a 0.35s (67200 bytes a 48kHz estéreo 16-bit), descartar ruido
+      if (totalPcm.length < 67200) {
         logEvent(`🔇 [Audio corto de ${username}] Descartado (${totalPcm.length} bytes).`);
         return;
       }
@@ -823,6 +870,12 @@ function configurarEscucha(connection) {
         if (cmd.type === 'BUSCAR_MUSICA') {
           const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
           await buscarYDarOpciones(cmd.query, canalTexto);
+          return;
+        }
+
+        // Si es charla casual pero Pepe ya está hablando, no interrumpir con otra respuesta de IA
+        if (botHablando) {
+          logEvent(`🤫 [Ignorado]: Pepe ya está hablando y fue charla casual.`);
           return;
         }
 
@@ -997,6 +1050,12 @@ client.once('ready', async () => {
     activities: [{ name: 'Cuidando racha & cotorreando 👑', type: ActivityType.Custom }],
     status: 'online'
   });
+
+  try {
+    await asegurarYtDlp();
+  } catch (err) {
+    console.error('⚠️ [yt-dlp Startup]:', err.message);
+  }
 
   try {
     const testPath = path.join(CACHE_DIR, 'test_startup.mp3');

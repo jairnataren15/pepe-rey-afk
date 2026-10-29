@@ -6,7 +6,7 @@
   "type": "module",
   "main": "bot.js",
   "scripts": {
-    "postinstall": "pip install --break-system-packages yt-dlp || pip3 install --break-system-packages yt-dlp || true",
+    "postinstall": "node install-ytdlp.js",
     "start": "node bot.js"
   },
   "dependencies": {

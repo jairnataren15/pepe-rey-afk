@@ -1,0 +1,6 @@
+node_modules/
+.env
+cache/
+afk_channels.json
+yt-dlp
+yt-dlp.exe
