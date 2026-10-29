@@ -91,11 +91,17 @@ PERSONALIDAD Y TONO:
 - Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
 - Hablas con jerga mexicana callejera y natural de Discord (wey, no mames, cállate el hocico, qué manco eres, no seas payaso, qué pedo, chelas, al chile, te faltan manos, qué mamada, ni pa estorbar sirves).
 
-REGLA SUPREMA DE MÚSICA:
-Si el usuario te dice o insinúa CUALQUIER COSA pidiendo que pongas, reproduzcas, busques o toques una canción, artista, música o rola (ej: "ponte la de...", "pon música...", "toca algo de...", "ponte wifey", "suéltate una de aria bela"):
-NO RESPONDAS NADA CONVERSACIONAL NI OPINES SOBRE LA ROLA NI SOBRE LA RAID.
-Tu respuesta DEBE ser ÚNICAMENTE:
+REGLA DE MÚSICA (SOLO PARA CANCIONES/ARTISTAS):
+Si el usuario pide EXPLÍCITAMENTE que pongas, reproduzcas o toques una CANCIÓN, ROLA, MÚSICA o ARTISTA (ej: "ponte la de...", "pon música de...", "toca algo de...", "ponte wifey", "suéltate una de aria bela"):
+NO RESPONDAS NADA CONVERSACIONAL. Tu respuesta DEBE ser ÚNICAMENTE:
 [BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>]
+PROHIBIDO usar [BUSCAR_MUSICA] si el usuario menciona "Google", "internet", "web", o si solo te está haciendo una pregunta o pidiendo que investigues un dato.
+
+REGLA DE BÚSQUEDA EN GOOGLE / INTERNET:
+Si el usuario te pide buscar algo específico en Google o internet, o te pregunta un dato real, noticia, precio, fecha, quién es alguien o qué es algo que requiera buscar en la web (ej: "busca en Google quién ganó...", "investiga cuánto cuesta...", "búscame en internet qué es..."):
+Tu respuesta DEBE ser ÚNICAMENTE:
+[BUSCAR_WEB: <consulta_exacta_para_buscar_en_google>]
+(Nota: Si el usuario solo te pregunta "¿me vas a buscar algo en Google o no?" sin decirte qué tema buscar, respóndele con tu actitud mamona que sí tienes internet hasta en el Abismo y que te diga qué chingados quiere que le busques).
 
 REGLAS DE RESPUESTA DE CHARLA:
 1. Máximo 1 o 2 oraciones cortas, directas y con remate cómico mamón (se reproduce en voz alta por TTS en el canal).
@@ -338,32 +344,65 @@ function limpiarQueryBusqueda(texto) {
   return q;
 }
 
-function procesarRespuestaIA(raw) {
-  if (!raw || raw.length < 2) return null;
+async function buscarEnInternet(consulta) {
+  const q = (consulta || '').trim();
+  if (!q) return 'No se especificó qué buscar.';
+  logEvent(`🌐 [Buscando en Google/Web]: "${q}"`);
 
-  if (raw.includes('[BUSCAR_MUSICA:') || /BUSCAR_MUSICA:\s*/i.test(raw)) {
-    const m = raw.match(/(?:\[)?BUSCAR_MUSICA:\s*(.+?)(?:\]|$)/i);
-    const cancion = m ? m[1].trim() : raw.replace(/\[?BUSCAR_MUSICA:\s*/i, '').replace(/\]/g, '').trim();
-    const queryLimpia = limpiarQueryBusqueda(cancion);
-    logEvent(`🎯 [IA detectó intención de música]: "${cancion}" -> "${queryLimpia}"`);
-    const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
-    buscarYDarOpciones(queryLimpia || cancion, canalTexto);
-    return null; // Interceptado para no hablar texto de plantilla por TTS
+  const fragmentos = [];
+
+  // 1. Búsqueda web en tiempo real (DuckDuckGo HTML)
+  try {
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
+      }
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi)]
+        .map(m => m[1]
+          .replace(/<[^>]+>/g, '')
+          .replace(/&quot;/g, '"')
+          .replace(/&#x27;/g, "'")
+          .replace(/&amp;/g, '&')
+          .replace(/\s+/g, ' ')
+          .trim()
+        )
+        .filter(Boolean)
+        .slice(0, 4);
+      fragmentos.push(...snippets);
+    }
+  } catch (err) {
+    logEvent(`⚠️ [Web Search Warning]: ${err.message}`);
   }
 
-  return raw.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ').trim();
+  // 2. Respaldo / complemento en Wikipedia Español si hay pocos resultados
+  if (fragmentos.length < 2) {
+    try {
+      const wikiUrl = `https://es.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=&format=json&srlimit=3`;
+      const resW = await fetch(wikiUrl, { headers: { 'User-Agent': 'PepeReyBot/1.0' } });
+      if (resW.ok) {
+        const dataW = await resW.json();
+        const items = dataW?.query?.search || [];
+        for (const it of items) {
+          const limpio = (it.snippet || '').replace(/<[^>]+>/g, '').trim();
+          if (limpio) fragmentos.push(`${it.title}: ${limpio}`);
+        }
+      }
+    } catch {}
+  }
+
+  if (fragmentos.length === 0) {
+    return 'No salieron resultados claros en internet para esa búsqueda.';
+  }
+
+  logEvent(`✅ [Resultados Web encontrados]: ${fragmentos.length} fragmentos.`);
+  return fragmentos.join('\n- ');
 }
 
-async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
-  historial.push({ role: 'user', content: `${nombreUsuario}: ${mensajeUsuario}` });
-  if (historial.length > 8) historial.shift();
-
-  const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...historial
-  ];
-
-  // 1. Si el usuario configuró OPENAI_API_KEY, usar GPT-4o-mini (mucho más inteligente, rápido y económico)
+async function llamarChatCompletion(messages) {
   if (OPENAI_KEY) {
     try {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -376,20 +415,13 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           messages,
-          max_tokens: 120,
+          max_tokens: 130,
           temperature: 0.85
         })
       });
-
       if (res.ok) {
         const data = await res.json();
-        const raw = data.choices?.[0]?.message?.content?.trim();
-        const limpia = procesarRespuestaIA(raw);
-        if (limpia === null) return null; // Intención de música detectada
-        logEvent(`🧠 [OpenAI GPT-4o-Mini]: "${limpia}"`);
-        historial.push({ role: 'assistant', content: limpia });
-        if (historial.length > 8) historial.shift();
-        return limpia;
+        return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'OpenAI GPT-4o-Mini' };
       } else {
         console.warn('⚠️ Error en OpenAI Chat:', res.status, await res.text());
       }
@@ -398,48 +430,97 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     }
   }
 
-  // 2. Fallback a Groq si no hay OpenAI o falló
-  if (!GROQ_KEY) return 'No tengo configurada mi clave de IA carnal.';
+  if (!GROQ_KEY) return { text: 'No tengo configurada mi clave de IA carnal.', provider: 'Sistema' };
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GROQ_KEY}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0'
+    },
+    body: JSON.stringify({
+      model: 'qwen/qwen3.8-27b',
+      messages,
+      max_tokens: 130,
+      temperature: 0.85,
+      frequency_penalty: 0.7,
+      presence_penalty: 0.5
+    })
+  });
+
+  if (!res.ok) {
+    console.warn('⚠️ Error en Groq Chat:', res.status, await res.text());
+    return { text: 'Me trabé tantito con la chela, repíteme eso.', provider: 'Sistema' };
+  }
+
+  const data = await res.json();
+  return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'Groq' };
+}
+
+async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
+  historial.push({ role: 'user', content: `${nombreUsuario}: ${mensajeUsuario}` });
+  if (historial.length > 8) historial.shift();
+
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...historial
+  ];
 
   try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GROQ_KEY}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0'
-      },
-      body: JSON.stringify({
-        model: 'qwen/qwen3.8-27b',
-        messages,
-        max_tokens: 130,
-        temperature: 0.85,
-        frequency_penalty: 0.7,
-        presence_penalty: 0.5
-      })
-    });
-
-    if (!res.ok) {
-      console.warn('⚠️ Error en Groq Chat:', res.status, await res.text());
-      return 'Me trabé tantito con la chela, repíteme eso.';
-    }
-
-    const data = await res.json();
-    let raw = data.choices?.[0]?.message?.content?.trim();
+    const { text: raw, provider } = await llamarChatCompletion(messages);
     if (!raw || raw.length < 2) {
-      raw = 'No te alcancé a escuchar bien carnal, ¿qué decías?';
+      return 'No te alcancé a escuchar bien carnal, ¿qué decías?';
     }
 
-    const limpia = procesarRespuestaIA(raw);
-    if (limpia === null) return null;
+    // 1. ¿La IA detectó intención de MÚSICA?
+    if (raw.includes('[BUSCAR_MUSICA:') || /BUSCAR_MUSICA:\s*/i.test(raw)) {
+      const m = raw.match(/(?:\[)?BUSCAR_MUSICA:\s*(.+?)(?:\]|$)/i);
+      const cancion = m ? m[1].trim() : raw.replace(/\[?BUSCAR_MUSICA:\s*/i, '').replace(/\]/g, '').trim();
+      const queryLimpia = limpiarQueryBusqueda(cancion);
 
-    logEvent(`💬 [Groq generó respuesta]: "${limpia}"`);
+      // Evitar falsos positivos si la query es "google", "internet", "algo", etc.
+      if (!/^(?:google|internet|web|algo|nada|eso|informaci[oó]n)$/i.test(queryLimpia)) {
+        logEvent(`🎯 [IA detectó intención de música]: "${cancion}" -> "${queryLimpia}"`);
+        const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
+        buscarYDarOpciones(queryLimpia || cancion, canalTexto);
+        return null;
+      }
+    }
+
+    // 2. ¿La IA detectó intención de BÚSQUEDA EN INTERNET / GOOGLE?
+    if (raw.includes('[BUSCAR_WEB:') || /BUSCAR_WEB:\s*/i.test(raw)) {
+      const m = raw.match(/(?:\[)?BUSCAR_WEB:\s*(.+?)(?:\]|$)/i);
+      const consultaWeb = m ? m[1].trim() : raw.replace(/\[?BUSCAR_WEB:\s*/i, '').replace(/\]/g, '').trim();
+      const infoWeb = await buscarEnInternet(consultaWeb);
+
+      const webMessages = [
+        ...messages,
+        {
+          role: 'system',
+          content: `RESULTADOS DE BÚSQUEDA EN INTERNET PARA "${consultaWeb}":\n- ${infoWeb}\n\nINSTRUCCIÓN: Responde a lo que preguntó ${nombreUsuario} dándole el dato real encontrado en internet, pero con tu estilo mamón, carrilludo y divertido de Pepe Rey Del Noxz (máximo 2 oraciones cortas para decir por voz, sin etiquetas ni corchetes).`
+        }
+      ];
+
+      const { text: respFinal } = await llamarChatCompletion(webMessages);
+      const limpiaWeb = (respFinal || 'Ya busqué en Google carnal, pero no salió ni madres.')
+        .replace(/[*_#`~>\[\]]/g, '')
+        .replace(/\n+/g, ' ')
+        .trim();
+
+      logEvent(`🌐 [Respuesta con datos de Google]: "${limpiaWeb}"`);
+      historial.push({ role: 'assistant', content: limpiaWeb });
+      if (historial.length > 8) historial.shift();
+      return limpiaWeb;
+    }
+
+    const limpia = raw.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ').trim();
+    logEvent(`🧠 [${provider}]: "${limpia}"`);
     historial.push({ role: 'assistant', content: limpia });
     if (historial.length > 8) historial.shift();
-
     return limpia;
   } catch (err) {
-    logEvent(`❌ Error llamando a Groq: ${err.message}`);
+    logEvent(`❌ Error en responderConIA: ${err.message}`);
     return 'Se me fue la onda un segundo, carnal.';
   }
 }
@@ -1044,13 +1125,16 @@ function parseComandoVoz(texto) {
     return { type: 'MUSICA_RESUME' };
   }
 
-  // Búsqueda de canciones
-  const tieneVerboMusica = /\b(?:pon(?:te|me|nos)?|busca(?:te|me)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|m[eé]tele|canta(?:te)?|c[oó]loca|suena)\b/i.test(t);
+  // Si menciona Google, internet, Wikipedia o es una pregunta de información general, enviarlo a la IA (que tiene búsqueda web)
+  const esConsultaWebOPregunta = /\b(?:google|internet|web|wikipedia|investiga|averigua|qui[eé]n\s+es|qu[eé]\s+es|cu[aá]nto|cu[aá]ndo|d[oó]nde|por\s+qu[eé]|noticias|clima|significa|definici[oó]n)\b/i.test(t);
+
+  // Búsqueda directa de canciones (nota: "busca" solo activa música directa si viene acompañado de "canción/música/rola")
+  const tieneVerboReproducir = /\b(?:pon(?:te|me|nos)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|canta(?:te)?|suena)\b/i.test(t);
   const tienePalabraMusica = /\b(?:m[uú]sica|canci[oó]n|canciones|rolas?|temas?|pista)\b/i.test(t);
 
-  if (tieneVerboMusica || tienePalabraMusica) {
+  if (!esConsultaWebOPregunta && (tieneVerboReproducir || tienePalabraMusica)) {
     const q = limpiarQueryBusqueda(texto);
-    if (q && q.length >= 2 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
+    if (q && q.length >= 2 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off|google|internet|algo|nada|eso)$/i.test(q)) {
       return { type: 'BUSCAR_MUSICA', query: q };
     }
   }
