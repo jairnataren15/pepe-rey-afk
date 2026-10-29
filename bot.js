@@ -15,6 +15,7 @@ import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import yts from 'yt-search';
 import { Ytdl } from '@distube/ytdl-core';
 import play from 'play-dl';
+import { ytmp3 } from '@vreden/youtube_scraper';
 import { asegurarYtDlp } from './install-ytdlp.js';
 
 if (ffmpegPath) {
@@ -595,8 +596,20 @@ function getExecutableYtDlp() {
   return 'yt-dlp';
 }
 
-// 1. Extractor directo YouTube (estilo CreepyD246/Discord-Music-Bot-Remastered: bestaudio[abr<=96]/bestaudio)
-function obtenerUrlYouTubeDirecto(videoUrl) {
+// 1. Extractor directo del video de YouTube exacto (sin bloqueo de IP en Render via @vreden/youtube_scraper + respaldo yt-dlp)
+async function obtenerUrlYouTubeDirecto(videoUrl) {
+  try {
+    const resMp3 = await ytmp3(videoUrl, 128);
+    if (resMp3?.status && resMp3?.download?.url) {
+      return {
+        streamUrl: resMp3.download.url,
+        sourceName: `YouTube Original ("${resMp3.metadata?.title || 'MP3 128kbps'}")`
+      };
+    }
+  } catch (err) {
+    logEvent(`⚠️ [YouTube API]: ${err.message}`);
+  }
+
   return new Promise((resolve, reject) => {
     const bin = getExecutableYtDlp();
     const isWindows = process.platform === 'win32';
