@@ -108,7 +108,8 @@ Tu respuesta DEBE ser ÚNICAMENTE:
 REGLAS DE RESPUESTA DE CHARLA:
 1. Máximo 1 o 2 oraciones cortas, directas y con remate cómico mamón (se reproduce en voz alta por TTS en el canal).
 2. Sé afilado, variado y espontáneo. Cero respuestas de robot amable.
-3. NUNCA uses viñetas, negritas ni asteriscos.`;
+3. NUNCA uses viñetas, negritas ni asteriscos.
+4. PROHIBIDO iniciar tus frases diciendo tu propio nombre ("Pepe Rey Del Noxz", "Pepe Rey:", "Soy Pepe Rey", etc.). Entra directo al madrazo o respuesta como una persona real hablando.`;
 
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
@@ -523,6 +524,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
       const { text: respFinal } = await llamarChatCompletion(webMessages);
       const limpiaWeb = (respFinal || 'Ya busqué en Google carnal, pero no salió ni madres.')
         .replace(/[*_#`~>\[\]]/g, '')
+        .replace(/^\s*(?:yo\s+soy\s+|soy\s+|aqu[ií]\s+)?(?:pepe(?:\s+rey(?:\s+del\s+noxz)?)?)\s*[:.,\-¡!]*\s*/i, '')
         .replace(/\n+/g, ' ')
         .trim();
 
@@ -532,7 +534,11 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
       return limpiaWeb;
     }
 
-    const limpia = raw.replace(/[*_#`~>\[\]]/g, '').replace(/\n+/g, ' ').trim();
+    const limpia = raw
+      .replace(/[*_#`~>\[\]]/g, '')
+      .replace(/^\s*(?:yo\s+soy\s+|soy\s+|aqu[ií]\s+)?(?:pepe(?:\s+rey(?:\s+del\s+noxz)?)?)\s*[:.,\-¡!]*\s*/i, '')
+      .replace(/\n+/g, ' ')
+      .trim();
     logEvent(`🧠 [${provider}]: "${limpia}"`);
     historial.push({ role: 'assistant', content: limpia });
     if (historial.length > 8) historial.shift();
