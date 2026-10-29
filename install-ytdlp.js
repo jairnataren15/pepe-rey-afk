@@ -38,7 +38,7 @@ export async function asegurarYtDlp() {
 
   const downloadUrl = isWindows
     ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
-    : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+    : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux';
 
   console.log(`⏳ [yt-dlp] Descargando binario independiente para ${process.platform}...`);
   try {

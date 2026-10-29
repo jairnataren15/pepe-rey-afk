@@ -473,24 +473,23 @@ async function generarAudioJorge(texto, outPath) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 7. SISTEMA DE AUDIO (Voz de Pepe + Música de YouTube + Volumen)
+// 7. SISTEMA DE AUDIO (Voz de Pepe + Música Dual YouTube/SoundCloud + FFmpeg Reconnect)
 // ───────────────────────────────────────────────────────────────
-const ytdl = new Ytdl();
 let volumenMusica = 0.5; // 50% por defecto (0.05 a 1.0)
-let cancionActual = null; // { title, url, timestamp, author }
+let cancionActual = null; // { title, url, timestamp, seconds, author }
 let recursoMusica = null; // AudioResource con inlineVolume
 let opcionesMusica = []; // Top 3 opciones encontradas
 let esperandoSeleccion = false;
 let timeoutSeleccion = null;
 let modoAntesDeMusica = false; // Solo restaurar si estaba en ON antes de poner música
-let procesoYtDlp = null; // Proceso hijo para streaming directo sin bloqueo
+let procesoFfmpegMusica = null; // Stream FFmpeg con auto-reconnect
 
 // Reproductor exclusivo para la voz de Pepe
 const voicePlayer = createAudioPlayer({
   behaviors: { noSubscriber: NoSubscriberBehavior.Play }
 });
 
-// Reproductor exclusivo para la música de YouTube
+// Reproductor exclusivo para la música
 const musicPlayer = createAudioPlayer({
   behaviors: { noSubscriber: NoSubscriberBehavior.Play }
 });
@@ -512,16 +511,16 @@ musicPlayer.on(AudioPlayerStatus.Playing, () => {
 });
 
 musicPlayer.on(AudioPlayerStatus.Idle, () => {
+  if (!cancionActual) return; // Ignorar si fue limpieza intencional antes de nueva canción
   logEvent('⏹️ [MusicPlayer] Canción terminada.');
   cancionActual = null;
   recursoMusica = null;
 
-  if (procesoYtDlp) {
-    try { procesoYtDlp.kill('SIGTERM'); } catch {}
-    procesoYtDlp = null;
+  if (procesoFfmpegMusica) {
+    try { procesoFfmpegMusica.destroy(); } catch {}
+    procesoFfmpegMusica = null;
   }
 
-  // Restaurar automáticamente el modo charla continua solo si estaba activo antes
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
     logEvent('🟢 [Música Terminada]: Modo charla continua restaurado.');
@@ -535,9 +534,9 @@ musicPlayer.on('error', (err) => {
   cancionActual = null;
   recursoMusica = null;
 
-  if (procesoYtDlp) {
-    try { procesoYtDlp.kill('SIGTERM'); } catch {}
-    procesoYtDlp = null;
+  if (procesoFfmpegMusica) {
+    try { procesoFfmpegMusica.destroy(); } catch {}
+    procesoFfmpegMusica = null;
   }
 
   if (modoAntesDeMusica) {
@@ -574,7 +573,7 @@ function inicializarCookies() {
     try {
       const decoded = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64.trim(), 'base64').toString('utf8');
       fs.writeFileSync(cookiesPath, decoded, 'utf8');
-      logEvent(`🍪 [Cookies]: cookies.txt cargado exitosamente (${decoded.length} bytes, ${decoded.split('\n').length} líneas)`);
+      logEvent(`🍪 [Cookies]: cookies.txt cargado (${decoded.length} bytes, ${decoded.split('\n').length} líneas)`);
     } catch (err) {
       logEvent(`⚠️ [Cookies]: Error decodificando YOUTUBE_COOKIES_BASE64: ${err.message}`);
     }
@@ -589,81 +588,111 @@ function getExecutableYtDlp() {
   return 'yt-dlp';
 }
 
-// Inicia streaming directo de audio en stdout desde yt-dlp usando cookies y Chrome UA
-function crearStreamYtDlp(videoUrl) {
+// 1. Extractor directo YouTube (estilo CreepyD246/Discord-Music-Bot-Remastered: bestaudio[abr<=96]/bestaudio)
+function obtenerUrlYouTubeDirecto(videoUrl) {
   return new Promise((resolve, reject) => {
-    try {
-      if (procesoYtDlp) {
-        try { procesoYtDlp.kill('SIGTERM'); } catch {}
-        procesoYtDlp = null;
+    const bin = getExecutableYtDlp();
+    const isWindows = process.platform === 'win32';
+
+    const baseArgs = [
+      '-g',
+      '-f', 'bestaudio[abr<=96]/bestaudio/best',
+      '--no-playlist',
+      '--no-warnings',
+      '--extractor-args', 'youtube:player_client=visionos,android',
+      videoUrl
+    ];
+
+    const cmd = isWindows ? 'py' : bin;
+    const args = isWindows ? ['-3.14', '-m', 'yt_dlp', ...baseArgs] : baseArgs;
+
+    execFile(cmd, args, { timeout: 8000 }, (err, stdout, stderr) => {
+      if (!err && stdout && stdout.trim().startsWith('http')) {
+        const directUrl = stdout.trim().split('\n')[0].trim();
+        return resolve({ streamUrl: directUrl, sourceName: 'YouTube Direct' });
       }
-
-      inicializarCookies();
-      const bin = getExecutableYtDlp();
-      const isWindows = process.platform === 'win32';
-      const cookiesPath = path.resolve(process.cwd(), 'cookies.txt');
-      const hasCookies = fs.existsSync(cookiesPath);
-
-      const baseArgs = [
-        '-f', 'bestaudio/best',
-        '--no-playlist',
-        '--extractor-args', 'youtube:player_client=visionos,android',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        '-o', '-'
-      ];
-
-      if (hasCookies) {
-        baseArgs.push('--cookies', cookiesPath);
-      }
-
-      baseArgs.push(videoUrl);
-
-      let cmd = bin;
-      let args = baseArgs;
-
-      if (isWindows) {
-        cmd = 'py';
-        args = ['-3.14', '-m', 'yt_dlp', ...baseArgs];
-      }
-
-      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      procesoYtDlp = child;
-
-      let started = false;
-      let stderrOutput = '';
-
-      child.stderr.on('data', (d) => {
-        stderrOutput += d.toString();
-      });
-
-      child.stdout.once('data', (firstChunk) => {
-        started = true;
-        const combined = new PassThrough();
-        combined.write(firstChunk);
-        child.stdout.pipe(combined);
-        resolve(combined);
-      });
-
-      child.on('error', (err) => {
-        if (!started) reject(err);
-      });
-
-      child.on('close', (code) => {
-        if (!started) {
-          reject(new Error(`yt-dlp terminó con código ${code}: ${stderrOutput.slice(-150)}`));
-        }
-      });
-
-      setTimeout(() => {
-        if (!started) {
-          try { child.kill('SIGTERM'); } catch {}
-          reject(new Error('yt-dlp tardó más de 18s en soltar audio'));
-        }
-      }, 18000);
-    } catch (err) {
-      reject(err);
-    }
+      reject(new Error((stderr || err?.message || 'Fallo en yt-dlp').slice(-180).trim()));
+    });
   });
+}
+
+// 2. Extractor directo SoundCloud API v2 (0% bloqueo en Render/Datacenter, resuelve en ~1s sin depender de play.stream)
+async function obtenerUrlSoundCloudDirecto(query, duracionObjetivoSeg = 0) {
+  const cid = await play.getFreeClientID();
+  await play.setToken({ soundcloud: { client_id: cid } });
+  const scResults = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 15 });
+  if (!scResults || scResults.length === 0) {
+    throw new Error('Sin resultados en SoundCloud');
+  }
+
+  const candidatos = [];
+  for (const track of scResults) {
+    const fmt = (track.formats || []).find(f => f.format?.protocol === 'progressive') ||
+                (track.formats || []).find(f => f.format?.protocol === 'hls');
+    if (fmt && fmt.url) {
+      candidatos.push({ track, fmt });
+    }
+  }
+
+  if (candidatos.length === 0) {
+    throw new Error('Pistas con DRM en SoundCloud');
+  }
+
+  const pideRemix = /remix|slowed|sped|cover|mashup|edit/i.test(query);
+  if (!pideRemix) {
+    candidatos.sort((a, b) => {
+      const aPenal = /remix|slowed|sped|cover|mashup|1920|pvz|humor/i.test(a.track.name) ? 1 : 0;
+      const bPenal = /remix|slowed|sped|cover|mashup|1920|pvz|humor/i.test(b.track.name) ? 1 : 0;
+      if (aPenal !== bPenal) return aPenal - bPenal;
+      if (duracionObjetivoSeg > 0) {
+        return Math.abs((a.track.durationInSec || 0) - duracionObjetivoSeg) - Math.abs((b.track.durationInSec || 0) - duracionObjetivoSeg);
+      }
+      return 0;
+    });
+  }
+
+  for (const { track, fmt } of candidatos) {
+    try {
+      const apiRes = await fetch(`${fmt.url}?client_id=${cid}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      if (apiRes.ok) {
+        const data = await apiRes.json();
+        if (data?.url) {
+          return {
+            streamUrl: data.url,
+            sourceName: `SoundCloud ("${track.name}")`
+          };
+        }
+      }
+    } catch {}
+  }
+
+  throw new Error('No se pudo resolver URL de SoundCloud');
+}
+
+// Resuelve en paralelo YouTube y SoundCloud mientras Pepe anuncia la canción
+async function resolverMejorStreamUrl(videoInfo, tituloLimpio) {
+  const promYt = obtenerUrlYouTubeDirecto(videoInfo.url).catch(err => ({ error: err }));
+  const promSc = obtenerUrlSoundCloudDirecto(tituloLimpio, videoInfo.seconds || 0).catch(err => ({ error: err }));
+
+  const [resYt, resSc] = await Promise.all([promYt, promSc]);
+
+  if (resYt && resYt.streamUrl) {
+    logEvent(`📡 [Fuente de Audio]: ${resYt.sourceName} listo`);
+    return resYt;
+  }
+
+  if (resYt?.error) {
+    logEvent(`ℹ️ [YouTube bloqueado en nube, usando respaldo inmediato SoundCloud]`);
+  }
+
+  if (resSc && resSc.streamUrl) {
+    logEvent(`☁️ [Fuente de Audio]: ${resSc.sourceName} listo`);
+    return resSc;
+  }
+
+  throw new Error(`YouTube (${resYt?.error?.message || 'falló'}) y SoundCloud (${resSc?.error?.message || 'falló'})`);
 }
 
 // Reproduce la voz de Pepe con Pause & Swap si hay música sonando
@@ -673,8 +702,8 @@ async function reproducirVozPepe(texto) {
 
   const audioFile = path.join(CACHE_DIR, `pepe_${Date.now()}.mp3`);
   try {
-    const hayMusica = cancionActual !== null;
-    if (hayMusica && musicPlayer.state.status === AudioPlayerStatus.Playing) {
+    const hayMusica = cancionActual !== null && musicPlayer.state.status === AudioPlayerStatus.Playing;
+    if (hayMusica) {
       musicPlayer.pause();
     }
 
@@ -701,7 +730,7 @@ async function reproducirVozPepe(texto) {
       voicePlayer.on('error', finish);
     });
 
-    // Si había música sonando previamente, restaurar suscripción y despausar SIEMPRE
+    // Si había música sonando previamente, restaurar suscripción y despausar
     if (hayMusica && conexionActual && cancionActual) {
       conexionActual.subscribe(musicPlayer);
       musicPlayer.unpause();
@@ -734,6 +763,7 @@ async function buscarYDarOpciones(query, canalTexto = null) {
       title: v.title,
       url: v.url,
       timestamp: v.timestamp,
+      seconds: v.seconds || 0,
       author: v.author?.name || 'YouTube'
     }));
     esperandoSeleccion = true;
@@ -795,6 +825,15 @@ async function reproducirCancion(videoInfo) {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
 
+  // Limpiar cualquier stream anterior antes de cargar la nueva canción (evita condiciones de carrera)
+  cancionActual = null;
+  recursoMusica = null;
+  if (procesoFfmpegMusica) {
+    try { procesoFfmpegMusica.destroy(); } catch {}
+    procesoFfmpegMusica = null;
+  }
+  try { musicPlayer.stop(true); } catch {}
+
   // Al poner música: recordar si estaba en ON y poner temporalmente en OFF (solo responder a "Pepe")
   modoAntesDeMusica = modoCharlaContinua;
   if (modoCharlaContinua) {
@@ -803,75 +842,52 @@ async function reproducirCancion(videoInfo) {
   }
 
   try {
-    cancionActual = videoInfo;
     const tituloLimpio = limpiarTituloParaVoz(videoInfo.title);
     logEvent(`🎵 [Cargando audio]: "${videoInfo.title}" [${videoInfo.timestamp}]`);
 
-    await reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`);
+    // Resolver el enlace de audio EN PARALELO mientras Pepe anuncia la rola por voz
+    const [, resultadoStream] = await Promise.all([
+      reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`),
+      resolverMejorStreamUrl(videoInfo, tituloLimpio)
+    ]);
 
-    let stream = null;
-    let inputType = StreamType.Arbitrary;
+    // Pipeline FFmpeg con auto-reconnect idéntico a CreepyD246/Discord-Music-Bot-Remastered
+    procesoFfmpegMusica = new prism.FFmpeg({
+      args: [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', resultadoStream.streamUrl,
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-vn',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2'
+      ]
+    });
 
-    // 1. Streaming directo desde yt-dlp usando cookies y stdout
-    try {
-      stream = await crearStreamYtDlp(videoInfo.url);
-      logEvent(`📡 [Audio YouTube]: Streaming directo con yt-dlp iniciado exitosamente`);
-    } catch (eYt) {
-      logEvent(`⚠️ YouTube falló (${eYt.message.slice(0, 90)}...), buscando en SoundCloud...`);
+    procesoFfmpegMusica.on('error', (errFf) => {
+      logEvent(`⚠️ [FFmpeg Stream Warning]: ${errFf.message}`);
+    });
 
-      // 2. Fallback a SoundCloud con play-dl
-      try {
-        const cid = await play.getFreeClientID();
-        await play.setToken({ soundcloud: { client_id: cid } });
-        const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 3 });
-        let trackStream = null;
-        for (const item of (scResults || [])) {
-          const trackUrl = item?.permalink || item?.url;
-          if (!trackUrl) continue;
-          try {
-            const scStream = await play.stream(trackUrl);
-            if (scStream?.stream) {
-              trackStream = scStream;
-              logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${item.name || trackUrl}"`);
-              break;
-            }
-          } catch {}
-        }
-        if (trackStream) {
-          stream = trackStream.stream;
-          inputType = trackStream.type;
-        } else {
-          throw new Error('No se encontró stream reproducible en SoundCloud');
-        }
-      } catch (eSc) {
-        logEvent(`⚠️ SoundCloud falló (${eSc.message}), probando ytdl interno...`);
-
-        // 3. Fallback a ytdl-core
-        stream = ytdl.download(videoInfo.url, {
-          filter: { hasAudio: true, hasVideo: false },
-          quality: 'highestaudio'
-        });
-        stream.on('error', (errStream) => {
-          logEvent(`❌ [ytdl stream error]: ${errStream.message}`);
-        });
-      }
-    }
-
-    recursoMusica = createAudioResource(stream, {
-      inputType: inputType,
+    recursoMusica = createAudioResource(procesoFfmpegMusica, {
+      inputType: StreamType.Raw,
       inlineVolume: true
     });
     recursoMusica.volume.setVolume(volumenMusica);
+
+    cancionActual = videoInfo;
 
     if (conexionActual) {
       conexionActual.subscribe(musicPlayer);
     }
     musicPlayer.play(recursoMusica);
-    logEvent(`▶️ [Reproduciendo]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
+    logEvent(`▶️ [Reproduciendo desde ${resultadoStream.sourceName}]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
   } catch (err) {
     logEvent(`❌ Error reproduciendo audio: ${err.message}`);
     detenerMusica();
-    await reproducirVozPepe('No se pudo jalar esa rola carnal, YouTube no quiso soltar el audio.');
+    await reproducirVozPepe('No se pudo jalar esa rola carnal, intenta con otra opción.');
   }
 }
 
@@ -881,12 +897,12 @@ function detenerMusica() {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
 
-  if (procesoYtDlp) {
-    try { procesoYtDlp.kill('SIGTERM'); } catch {}
-    procesoYtDlp = null;
+  if (procesoFfmpegMusica) {
+    try { procesoFfmpegMusica.destroy(); } catch {}
+    procesoFfmpegMusica = null;
   }
 
-  try { musicPlayer.stop(); } catch {}
+  try { musicPlayer.stop(true); } catch {}
 
   if (modoAntesDeMusica) {
     modoCharlaContinua = true;
