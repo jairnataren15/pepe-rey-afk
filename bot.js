@@ -85,9 +85,24 @@ function esAlucinacionWhisper(texto) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 1. MINI SERVIDOR WEB KEEP-ALIVE (Render.com + UptimeRobot)
+// 1. MINI SERVIDOR WEB KEEP-ALIVE (Render.com + UptimeRobot + Logs)
 // ───────────────────────────────────────────────────────────────
+const recentLogs = [];
+function logEvent(msg) {
+  const time = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City' });
+  const line = `[${time}] ${msg}`;
+  console.log(line);
+  recentLogs.push(line);
+  if (recentLogs.length > 80) recentLogs.shift();
+}
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/logs') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(recentLogs.join('\n') || 'Sin actividad reciente registrada.');
+    return;
+  }
+
   const uptimeSec = Math.floor(process.uptime());
   const dias = Math.floor(uptimeSec / 86400);
   const horas = Math.floor((uptimeSec % 86400) / 3600);
@@ -109,7 +124,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Servidor Keep-Alive activo en el puerto ${PORT}`);
+  logEvent(`🌐 Servidor Keep-Alive activo en el puerto ${PORT}`);
 });
 
 // ───────────────────────────────────────────────────────────────
@@ -365,23 +380,22 @@ const activeUsers = new Set();
 
 function configurarEscucha(connection) {
   const receiver = connection.receiver;
+  logEvent('👂 [Oído Activado] Configurando receptor de voz en el canal.');
 
   receiver.speaking.on('start', (userId) => {
     if (botHablando) return; // Anti-eco si Pepe está hablando
     if (userId === client.user.id) return; // No escucharse a sí mismo
-    if (activeUsers.has(userId)) return; // Evitar suscripciones duplicadas
+    if (activeUsers.has(userId)) return; // Ya estamos grabando a este usuario
     activeUsers.add(userId);
 
     const user = client.users.cache.get(userId);
-    const username = user?.displayName || user?.username || 'Compa';
+    const username = user?.displayName || user?.username || `Usuario_${userId.slice(-4)}`;
 
-    console.log(`🎤 [Discord] ${username} está hablando...`);
+    logEvent(`🎤 [Voz detectada] ${username} empezó a hablar...`);
 
-    // Suscribirse a este hablante hasta 1 segundo de silencio
     const opusStream = receiver.subscribe(userId, {
       end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: 1000
+        behavior: EndBehaviorType.Manual
       }
     });
 
@@ -391,59 +405,93 @@ function configurarEscucha(connection) {
       frameSize: 960
     });
 
-    opusStream.on('error', (err) => {
-      activeUsers.delete(userId);
-    });
-
-    opusDecoder.on('error', (err) => {
-      // Ignorar paquetes defectuosos sin tumbar el bot
-    });
-
     const pcmChunks = [];
-    opusStream.pipe(opusDecoder);
+    let silenceTimer = null;
+    let maxTimer = null;
+    let finalized = false;
 
-    opusDecoder.on('data', (chunk) => {
-      pcmChunks.push(chunk);
-    });
+    const finalizar = async (razon = 'silencio') => {
+      if (finalized) return;
+      finalized = true;
 
-    opusDecoder.on('end', async () => {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      if (maxTimer) clearTimeout(maxTimer);
       activeUsers.delete(userId);
+
+      try { opusStream.destroy(); } catch {}
+      try { opusDecoder.destroy(); } catch {}
+
       if (botHablando) return;
       const totalPcm = Buffer.concat(pcmChunks);
 
-      // Si el audio es menor a 0.5s de duración (96000 bytes a 48kHz estéreo), descartar ruido
-      if (totalPcm.length < 96000) return;
+      // Si el audio es menor a 0.4s (76800 bytes a 48kHz estéreo 16-bit), descartar ruido
+      if (totalPcm.length < 76800) {
+        logEvent(`🔇 [Audio corto de ${username}] Descartado (${totalPcm.length} bytes).`);
+        return;
+      }
 
-      console.log(`📦 [Audio recibido] ${username}: ${(totalPcm.length / 192000).toFixed(1)}s de voz. Transcribiendo con Groq Whisper...`);
+      logEvent(`📦 [Grabación de ${username} completa por ${razon}]: ${(totalPcm.length / 192000).toFixed(1)}s de voz.`);
 
       const wavBuffer = createWavBuffer(totalPcm, 48000, 2);
       try {
         const texto = await transcribirConGroq(wavBuffer);
         if (!texto || texto.trim().length < 2) {
-          console.log('🔇 [Whisper] No se detectó texto claro en la grabación.');
+          logEvent(`🔇 [Whisper] No se detectó texto comprensible.`);
           return;
         }
 
         if (esAlucinacionWhisper(texto)) {
-          console.log(`🔇 [Whisper Filtro] Descartada alucinación de silencio/fondo: "${texto}"`);
+          logEvent(`🔇 [Whisper Filtro] Alucinación de fondo descartada: "${texto}"`);
           return;
         }
 
-        console.log(`👂 [${username} dijo]: "${texto}"`);
+        logEvent(`👂 [${username} dijo]: "${texto}" (Modo continuo: ${modoCharlaContinua})`);
 
         const esParaPepe = texto.toLowerCase().includes('pepe');
 
         // Responder si el modo continuo está activo O si dijeron "pepe"
         if (modoCharlaContinua || esParaPepe) {
-          console.log(`🧠 [Pepe respondiendo a ${username}]...`);
+          logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username);
           await reproducirEnCanal(respuesta);
         } else {
-          console.log(`ℹ️ [Ignorado] Modo continuo apagado y no dijeron 'Pepe'.`);
+          logEvent(`ℹ️ [Ignorado] Modo continuo apagado y no dijeron 'Pepe'.`);
         }
       } catch (err) {
-        console.warn('⚠️ Error procesando voz recibida:', err.message);
+        logEvent(`⚠️ Error procesando voz: ${err.message}`);
       }
+    };
+
+    const resetSilence = () => {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      // 1.1 segundos sin paquetes de audio -> usuario terminó de hablar
+      silenceTimer = setTimeout(() => {
+        finalizar('pausa de habla');
+      }, 1100);
+    };
+
+    // Máximo 10 segundos por turno
+    maxTimer = setTimeout(() => {
+      finalizar('límite 10s');
+    }, 10000);
+
+    opusStream.on('error', (err) => {
+      activeUsers.delete(userId);
+    });
+
+    opusDecoder.on('error', (err) => {
+      // Ignorar fallos de frames aislados
+    });
+
+    opusStream.pipe(opusDecoder);
+
+    opusDecoder.on('data', (chunk) => {
+      pcmChunks.push(chunk);
+      resetSilence();
+    });
+
+    opusDecoder.on('end', () => {
+      finalizar('cierre de stream');
     });
   });
 }
@@ -468,10 +516,10 @@ async function conectarCanal(channel) {
 
     conexionActual = connection;
     connection.subscribe(player);
-    configurarEscucha(connection);
 
     connection.on(VoiceConnectionStatus.Ready, () => {
-      console.log(`✅ [Voz Activa] Pepe Rey asegurado en "${channel.name}". Racha y oído activos.`);
+      logEvent(`✅ [Voz Activa] Pepe Rey asegurado en "${channel.name}". Racha y oído activos.`);
+      configurarEscucha(connection);
       kickstartVoice();
     });
 
