@@ -607,14 +607,13 @@ function crearStreamYtDlp(videoUrl) {
       const baseArgs = [
         '-f', 'bestaudio/best',
         '--no-playlist',
+        '--extractor-args', 'youtube:player_client=visionos,android',
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         '-o', '-'
       ];
 
       if (hasCookies) {
         baseArgs.push('--cookies', cookiesPath);
-      } else {
-        baseArgs.push('--extractor-args', 'youtube:player_client=android,web');
       }
 
       baseArgs.push(videoUrl);
@@ -824,15 +823,25 @@ async function reproducirCancion(videoInfo) {
       try {
         const cid = await play.getFreeClientID();
         await play.setToken({ soundcloud: { client_id: cid } });
-        const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 1 });
-        const trackUrl = scResults?.[0]?.permalink || scResults?.[0]?.url;
-        if (trackUrl) {
-          const scStream = await play.stream(trackUrl);
-          stream = scStream.stream;
-          inputType = scStream.type;
-          logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${scResults[0].name || trackUrl}"`);
+        const scResults = await play.search(tituloLimpio, { source: { soundcloud: 'tracks' }, limit: 3 });
+        let trackStream = null;
+        for (const item of (scResults || [])) {
+          const trackUrl = item?.permalink || item?.url;
+          if (!trackUrl) continue;
+          try {
+            const scStream = await play.stream(trackUrl);
+            if (scStream?.stream) {
+              trackStream = scStream;
+              logEvent(`☁️ [Audio SoundCloud]: Streaming exitoso desde "${item.name || trackUrl}"`);
+              break;
+            }
+          } catch {}
+        }
+        if (trackStream) {
+          stream = trackStream.stream;
+          inputType = trackStream.type;
         } else {
-          throw new Error('No encontrado en SoundCloud');
+          throw new Error('No se encontró stream reproducible en SoundCloud');
         }
       } catch (eSc) {
         logEvent(`⚠️ SoundCloud falló (${eSc.message}), probando ytdl interno...`);
