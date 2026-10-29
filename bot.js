@@ -72,10 +72,17 @@ if (!TOKEN) {
 // ───────────────────────────────────────────────────────────────
 // CONFIGURACIÓN DE PERSONALIDAD & MEMORIA
 // ───────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, carrilludo y cagón de la legión en Aion 2. Estás en canal de voz en Discord cotorreando con tus compas mientras juegan.
+const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, carrilludo y cagón de la legión Noxz en Aion 2. Estás en canal de voz en Discord cotorreando con tus compas mientras juegan.
+
+TU HISTORIA Y STATS EN AION 2 (LORE OFICIAL):
+- Eres orgullosamente ASMODIANO de corazón y miembro élite de la legión NOXZ en el servidor NA Oeste - Israphel (Israfael).
+- Eres el MEJOR GLADIADOR de todo Aion 2 y el rey indiscutible del PvP.
+- Tienes 4,200 de GS (Gear Score) y 300,000 de CP (Combat Power), armadísimo hasta los dientes.
+- Le partes su madre a diario a todos los de las legiones "Boba" y "Cat Cafe", que son tus hijos.
+- Los Elyos te la pelan completita, y te farmeas como conos a todos los asesinos y hechiceros mancos del servidor que intentan gankearte.
 
 PERSONALIDAD Y TONO:
-- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta burlarte de los fails, de los mancos que wipean en las raids, de los que se mueren por noobs en Abyss o PvP, de los que lloran y de las preguntas pendejas.
+- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador de 4200 GS y 300k de CP y burlarte de los fails, de los mancos que wipean en las raids, de los que se mueren por noobs en Abyss o PvP contra Boba o Cat Cafe, de los que lloran y de las preguntas pendejas.
 - Les dices mancos, conos con patas, muertos de hambre, manquísimos, mancuernas, que desinstalen el juego o que vendan la PC si la riegan.
 - Cero sermones morales y cero respuestas de robot amable o corporativo.
 - Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
@@ -820,6 +827,64 @@ async function buscarYDarOpciones(query, canalTexto = null) {
   }
 }
 
+async function crearStreamNodeDesdeUrl(streamUrl) {
+  const res = await fetch(streamUrl, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} al abrir stream de audio`);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  if (!streamUrl.includes('.m3u8') && !contentType.includes('mpegurl')) {
+    const out = new PassThrough({ highWaterMark: 1024 * 512 });
+    if (res.body) {
+      Readable.fromWeb(res.body).pipe(out);
+    } else {
+      const buf = Buffer.from(await res.arrayBuffer());
+      out.end(buf);
+    }
+    return out;
+  }
+
+  const text = await res.text();
+  const urls = [];
+  const mapMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
+  if (mapMatch) urls.push(mapMatch[1]);
+  for (const line of text.split('\n')) {
+    const l = line.trim();
+    if (l.startsWith('http://') || l.startsWith('https://')) {
+      urls.push(l);
+    }
+  }
+
+  if (urls.length === 0) {
+    throw new Error('Playlist m3u8 sin segmentos');
+  }
+
+  logEvent(`📦 [Node Streamer]: Descargando ${urls.length} segmentos de audio en memoria...`);
+  const out = new PassThrough({ highWaterMark: 1024 * 512 });
+
+  (async () => {
+    try {
+      for (const segUrl of urls) {
+        if (out.destroyed) break;
+        const r = await fetch(segUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (!r.ok) continue;
+        const b = Buffer.from(await r.arrayBuffer());
+        if (!out.destroyed) out.write(b);
+      }
+      if (!out.destroyed) out.end();
+    } catch {
+      if (!out.destroyed) out.end();
+    }
+  })();
+
+  return out;
+}
+
 async function reproducirCancion(videoInfo) {
   if (!videoInfo) return;
   esperandoSeleccion = false;
@@ -845,34 +910,24 @@ async function reproducirCancion(videoInfo) {
     const tituloLimpio = limpiarTituloParaVoz(videoInfo.title);
     logEvent(`🎵 [Cargando audio]: "${videoInfo.title}" [${videoInfo.timestamp}]`);
 
-    // Resolver el enlace de audio EN PARALELO mientras Pepe anuncia la rola por voz
-    const [, resultadoStream] = await Promise.all([
+    // Resolver enlace y pre-cargar los primeros segmentos EN PARALELO mientras Pepe anuncia la rola por voz
+    const [, { resultadoStream, nodeStream }] = await Promise.all([
       reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`),
-      resolverMejorStreamUrl(videoInfo, tituloLimpio)
+      (async () => {
+        const resStream = await resolverMejorStreamUrl(videoInfo, tituloLimpio);
+        const stream = await crearStreamNodeDesdeUrl(resStream.streamUrl);
+        return { resultadoStream: resStream, nodeStream: stream };
+      })()
     ]);
 
-    // Pipeline FFmpeg con auto-reconnect idéntico a CreepyD246/Discord-Music-Bot-Remastered
-    procesoFfmpegMusica = new prism.FFmpeg({
-      args: [
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-i', resultadoStream.streamUrl,
-        '-analyzeduration', '0',
-        '-loglevel', '0',
-        '-vn',
-        '-f', 's16le',
-        '-ar', '48000',
-        '-ac', '2'
-      ]
-    });
+    procesoFfmpegMusica = nodeStream;
 
     procesoFfmpegMusica.on('error', (errFf) => {
-      logEvent(`⚠️ [FFmpeg Stream Warning]: ${errFf.message}`);
+      logEvent(`⚠️ [Stream Warning]: ${errFf.message}`);
     });
 
     recursoMusica = createAudioResource(procesoFfmpegMusica, {
-      inputType: StreamType.Raw,
+      inputType: StreamType.Arbitrary,
       inlineVolume: true
     });
     recursoMusica.volume.setVolume(volumenMusica);
