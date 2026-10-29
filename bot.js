@@ -41,6 +41,13 @@ const AFK_STATE_PATH = path.join(__dirname, 'canal_afk.json');
 const CACHE_DIR = path.join(__dirname, 'temp_audio');
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
+process.on('unhandledRejection', (err) => {
+  console.warn('⚠️ [Aviso de red/Discord]:', err?.message || err);
+});
+process.on('uncaughtException', (err) => {
+  console.warn('⚠️ [Excepción controlada]:', err?.message || err);
+});
+
 if (!TOKEN) {
   console.error('❌ DISCORD_TOKEN no configurado.');
   process.exit(1);
@@ -307,6 +314,14 @@ function configurarEscucha(connection) {
       rate: 48000,
       channels: 2,
       frameSize: 960
+    });
+
+    opusStream.on('error', (err) => {
+      // Ignorar errores transitorios de red en el stream de voz
+    });
+
+    opusDecoder.on('error', (err) => {
+      // Ignorar paquetes Opus con jitter o incompletos de Discord sin tumbar el bot
     });
 
     const pcmChunks = [];
