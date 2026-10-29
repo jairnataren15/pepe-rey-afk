@@ -69,7 +69,7 @@ REGLAS ESTRICTAS DE CONVERSACIÓN:
 3. Máximo 1 o 2 oraciones cortas (se lee en voz alta en Discord). NUNCA uses viñetas, negritas, asteriscos ni listas.`;
 
 const historial = []; // últimos mensajes en memoria
-let modoCharlaContinua = false; // false = solo responde si dicen 'pepe' o usan /decir; true = escucha todo
+let modoCharlaContinua = true; // true = charla continua por defecto; false = solo responde si dicen 'pepe'
 let botHablando = false; // anti-eco
 
 // Filtro de alucinaciones típicas que Whisper genera cuando hay silencio o estática
@@ -144,6 +144,14 @@ function guardarCanalAFK(guildId, channelId) {
     const data = leerCanalesAFK();
     if (channelId) data[guildId] = channelId;
     else delete data[guildId];
+    fs.writeFileSync(AFK_STATE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  } catch {}
+}
+
+function guardarModoCharla(activo) {
+  try {
+    const data = leerCanalesAFK();
+    data.modoCharla = activo;
     fs.writeFileSync(AFK_STATE_PATH, JSON.stringify(data, null, 2), 'utf-8');
   } catch {}
 }
@@ -608,6 +616,9 @@ client.once('ready', async () => {
       console.log(`⚡ Comandos listos en: ${guild.name}`);
 
       const guardados = leerCanalesAFK();
+      if (guardados.modoCharla !== undefined) {
+        modoCharlaContinua = guardados.modoCharla;
+      }
       let targetId = guardados[guild.id] || (guild.id === PREF_GUILD ? PREF_CANAL : null);
       let target = targetId ? guild.channels.cache.get(targetId) : null;
       if (!target) target = guild.channels.cache.find(c => c.isVoiceBased());
@@ -639,6 +650,7 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'pepe') {
     const modo = interaction.options.getString('modo');
     modoCharlaContinua = (modo === 'on');
+    guardarModoCharla(modoCharlaContinua);
 
     if (modoCharlaContinua) {
       reproducirEnCanal('Qué onda banda, modo charla continua activado. Platíquenme qué andan haciendo.');
