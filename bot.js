@@ -1395,14 +1395,19 @@ client.once('ready', async () => {
     console.error('⚠️ [Voz de Jorge]: Falla en auto-prueba:', err.message);
   }
 
+  const guardados = leerCanalesAFK();
   for (const [, guild] of client.guilds.cache) {
     try {
       await guild.commands.set(COMANDOS);
       console.log(`⚡ Comandos listos en: ${guild.name}`);
 
       modoCharlaContinua = false; // Siempre inicia en modo tranquilo (OFF) para no molestar a nadie
-      let targetId = guardados[guild.id] || (guild.id === PREF_GUILD ? PREF_CANAL : null);
-      let target = targetId ? guild.channels.cache.get(targetId) : null;
+      // Priorizar el canal de voz donde haya gente conectada actualmente tras un redeploy
+      let target = guild.channels.cache.find(c => c.isVoiceBased() && c.members.some(m => !m.user.bot));
+      if (!target) {
+        let targetId = guardados[guild.id] || (guild.id === PREF_GUILD ? PREF_CANAL : null);
+        target = targetId ? guild.channels.cache.get(targetId) : null;
+      }
       if (!target) target = guild.channels.cache.find(c => c.isVoiceBased());
       if (target) await conectarCanal(target);
     } catch (err) {
