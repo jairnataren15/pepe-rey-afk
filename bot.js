@@ -574,7 +574,7 @@ function inicializarCookies() {
     try {
       const decoded = Buffer.from(process.env.YOUTUBE_COOKIES_BASE64.trim(), 'base64').toString('utf8');
       fs.writeFileSync(cookiesPath, decoded, 'utf8');
-      logEvent('🍪 [Cookies]: cookies.txt cargado exitosamente desde YOUTUBE_COOKIES_BASE64');
+      logEvent(`🍪 [Cookies]: cookies.txt cargado exitosamente (${decoded.length} bytes, ${decoded.split('\n').length} líneas)`);
     } catch (err) {
       logEvent(`⚠️ [Cookies]: Error decodificando YOUTUBE_COOKIES_BASE64: ${err.message}`);
     }
@@ -589,7 +589,7 @@ function getExecutableYtDlp() {
   return 'yt-dlp';
 }
 
-// Inicia streaming directo de audio en stdout desde yt-dlp usando cookies
+// Inicia streaming directo de audio en stdout desde yt-dlp usando cookies y Chrome UA
 function crearStreamYtDlp(videoUrl) {
   return new Promise((resolve, reject) => {
     try {
@@ -607,6 +607,7 @@ function crearStreamYtDlp(videoUrl) {
       const baseArgs = [
         '-f', 'bestaudio/best',
         '--no-playlist',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         '-o', '-'
       ];
 
