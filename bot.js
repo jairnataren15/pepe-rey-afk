@@ -98,9 +98,9 @@ NO RESPONDAS NADA CONVERSACIONAL. Tu respuesta DEBE ser ÚNICAMENTE:
 PROHIBIDO usar [BUSCAR_MUSICA] si el usuario menciona "Google", "internet", "web", o si solo te está haciendo una pregunta o pidiendo que investigues un dato.
 
 REGLA DE BÚSQUEDA EN GOOGLE / INTERNET:
-Si el usuario te pide buscar algo específico en Google o internet, o te pregunta un dato real, noticia, precio, fecha, quién es alguien o qué es algo que requiera buscar en la web (ej: "busca en Google quién ganó...", "investiga cuánto cuesta...", "búscame en internet qué es..."):
+Si el usuario te pide buscar algo específico en Google o internet, o te pregunta un dato real, noticia, precio, fecha, tier list, quién es alguien o qué es algo que requiera buscar en la web (ej: "busca en Google quién ganó...", "búscame las mejores clases...", "búscame en internet qué es..."):
 Tu respuesta DEBE ser ÚNICAMENTE:
-[BUSCAR_WEB: <consulta_exacta_para_buscar_en_google>]
+[BUSCAR_WEB: palabras clave separadas por espacios]
 (Nota: Si el usuario solo te pregunta "¿me vas a buscar algo en Google o no?" sin decirte qué tema buscar, respóndele con tu actitud mamona que sí tienes internet hasta en el Abismo y que te diga qué chingados quiere que le busques).
 
 REGLAS DE RESPUESTA DE CHARLA:
@@ -345,7 +345,11 @@ function limpiarQueryBusqueda(texto) {
 }
 
 async function buscarEnInternet(consulta) {
-  const q = (consulta || '').trim();
+  const q = (consulta || '')
+    .replace(/_/g, ' ')
+    .replace(/\bion\s*2\b/gi, 'Aion 2')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!q) return 'No se especificó qué buscar.';
   logEvent(`🌐 [Buscando en Google/Web]: "${q}"`);
 
@@ -491,14 +495,14 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     // 2. ¿La IA detectó intención de BÚSQUEDA EN INTERNET / GOOGLE?
     if (raw.includes('[BUSCAR_WEB:') || /BUSCAR_WEB:\s*/i.test(raw)) {
       const m = raw.match(/(?:\[)?BUSCAR_WEB:\s*(.+?)(?:\]|$)/i);
-      const consultaWeb = m ? m[1].trim() : raw.replace(/\[?BUSCAR_WEB:\s*/i, '').replace(/\]/g, '').trim();
+      const consultaWeb = (m ? m[1].trim() : raw.replace(/\[?BUSCAR_WEB:\s*/i, '').replace(/\]/g, '').trim()).replace(/_/g, ' ');
       const infoWeb = await buscarEnInternet(consultaWeb);
 
       const webMessages = [
         ...messages,
         {
-          role: 'system',
-          content: `RESULTADOS DE BÚSQUEDA EN INTERNET PARA "${consultaWeb}":\n- ${infoWeb}\n\nINSTRUCCIÓN: Responde a lo que preguntó ${nombreUsuario} dándole el dato real encontrado en internet, pero con tu estilo mamón, carrilludo y divertido de Pepe Rey Del Noxz (máximo 2 oraciones cortas para decir por voz, sin etiquetas ni corchetes).`
+          role: 'user',
+          content: `[SISTEMA: Ya buscaste en Google "${consultaWeb}" y obtuviste estos resultados reales de internet:\n- ${infoWeb}\n\nREGLA OBLIGATORIA: PROHIBIDO decir "no te puedo buscar eso" o "no tengo internet". Dales directamente la respuesta con los datos encontrados arriba (empezando tipo "Ya lo busqué en Google wey..." o directo al grano) con tu estilo mamón de Gladiador GigaChad en máximo 2 oraciones cortas para voz, sin corchetes ni etiquetas.]`
         }
       ];
 
@@ -526,41 +530,51 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 6. SÍNTESIS DE VOZ DE JORGE (MsEdgeTTS Puro Node.js + Fallback)
+// 6. SÍNTESIS DE VOZ DE JORGE (MsEdgeTTS con Reintentos Automáticos + Fallback HTTP Node.js)
 // ───────────────────────────────────────────────────────────────
 async function generarAudioJorge(texto, outPath) {
-  try {
-    const tts = new MsEdgeTTS();
-    await tts.setMetadata('es-MX-JorgeNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-    const { audioStream } = tts.toStream(texto);
-    return await new Promise((resolve, reject) => {
-      const writeStream = fs.createWriteStream(outPath);
-      audioStream.pipe(writeStream);
-      writeStream.on('finish', () => resolve(outPath));
-      writeStream.on('error', reject);
-      audioStream.on('error', reject);
-    });
-  } catch (errNode) {
-    console.warn('⚠️ MsEdgeTTS Node falló, probando fallback Python:', errNode.message);
-    return new Promise((resolve, reject) => {
-      const isWindows = process.platform === 'win32';
-      const cmd = isWindows ? 'py' : 'python3';
-      const args = isWindows
-        ? ['-3.14', '-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath]
-        : ['-m', 'edge_tts', '--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath];
+  let ultimoError = null;
 
-      execFile(cmd, args, (err) => {
-        if (err) {
-          execFile('edge-tts', ['--voice', 'es-MX-JorgeNeural', '--text', texto, '--write-media', outPath], (err2) => {
-            if (err2) reject(err2);
-            else resolve(outPath);
-          });
-        } else {
-          resolve(outPath);
-        }
+  // 1. Hasta 3 intentos con MsEdgeTTS (Jorge Neural) en Node.js por si el WebSocket de Microsoft parpadea
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const tts = new MsEdgeTTS();
+      await tts.setMetadata('es-MX-JorgeNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+      const { audioStream } = tts.toStream(texto);
+      await new Promise((resolve, reject) => {
+        const writeStream = fs.createWriteStream(outPath);
+        audioStream.pipe(writeStream);
+        writeStream.on('finish', () => resolve(outPath));
+        writeStream.on('error', reject);
+        audioStream.on('error', reject);
       });
-    });
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
+        return outPath;
+      }
+    } catch (errNode) {
+      ultimoError = errNode;
+      logEvent(`⚠️ [TTS Intento ${intento}/3]: ${errNode.message}`);
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
+
+  // 2. Respaldo 100% Node.js HTTP (Google TTS es-MX) para que NUNCA falle en Linux/Render sin Python
+  try {
+    const textoCorto = (texto || '').slice(0, 200);
+    const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=es-MX&client=tw-ob&q=${encodeURIComponent(textoCorto)}`;
+    const res = await fetch(gUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(outPath, buf);
+      return outPath;
+    }
+  } catch (errG) {
+    ultimoError = errG;
+  }
+
+  throw ultimoError || new Error('No se pudo sintetizar audio TTS');
 }
 
 // ───────────────────────────────────────────────────────────────
