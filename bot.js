@@ -10,9 +10,15 @@ import { Readable } from 'node:stream';
 import { execFile } from 'node:child_process';
 import dotenv from 'dotenv';
 import prism from 'prism-media';
+import ffmpegPath from 'ffmpeg-static';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import yts from 'yt-search';
 import { Ytdl } from '@distube/ytdl-core';
+
+if (ffmpegPath) {
+  process.env.FFMPEG_PATH = ffmpegPath;
+}
+
 import {
   Client,
   GatewayIntentBits,
@@ -42,6 +48,7 @@ const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const GROQ_KEY = process.env.GROQ_API_KEY?.trim();
 const PREF_CANAL = process.env.CANAL_ID?.trim() || '1557238620857831474';
 const PREF_GUILD = process.env.GUILD_ID?.trim() || '1310662226109272074';
+const CANAL_MUSICA_ID = process.env.CANAL_MUSICA_ID?.trim() || '1310712749709459516';
 const PORT = process.env.PORT || 3000;
 const AFK_STATE_PATH = path.join(__dirname, 'canal_afk.json');
 const CACHE_DIR = path.join(__dirname, 'temp_audio');
@@ -328,6 +335,7 @@ let recursoMusica = null; // AudioResource con inlineVolume
 let opcionesMusica = []; // Top 3 opciones encontradas
 let esperandoSeleccion = false;
 let timeoutSeleccion = null;
+let modoAntesDeMusica = true; // Para restaurar modo charla continua al terminar la canción
 
 // Reproductor exclusivo para la voz de Pepe
 const voicePlayer = createAudioPlayer({
@@ -350,15 +358,28 @@ voicePlayer.on('error', (err) => {
 musicPlayer.on(AudioPlayerStatus.Playing, () => {
   logEvent(`🎶 [MusicPlayer] Tocando "${cancionActual?.title || 'Canción'}" al ${Math.round(volumenMusica * 100)}% de volumen`);
 });
+
 musicPlayer.on(AudioPlayerStatus.Idle, () => {
   logEvent('⏹️ [MusicPlayer] Canción terminada.');
   cancionActual = null;
   recursoMusica = null;
+
+  // Restaurar automáticamente el modo charla continua cuando termine la música
+  if (modoAntesDeMusica) {
+    modoCharlaContinua = true;
+    logEvent('🟢 [Música Terminada]: Modo charla continua restaurado automáticamente.');
+  }
 });
+
 musicPlayer.on('error', (err) => {
   logEvent(`⚠️ [MusicPlayer Error]: ${err.message}`);
   cancionActual = null;
   recursoMusica = null;
+
+  if (modoAntesDeMusica) {
+    modoCharlaContinua = true;
+    logEvent('🟢 [Música Terminada tras error]: Modo charla continua restaurado.');
+  }
 });
 
 function limpiarTituloParaVoz(titulo) {
@@ -379,6 +400,28 @@ function ajustarVolumen(nuevoNivel) {
   const pct = Math.round(volumenMusica * 100);
   logEvent(`🔊 [Volumen ajustado a]: ${pct}%`);
   return pct;
+}
+
+// Extrae el enlace HTTPS directo de audio con yt-dlp
+function obtenerUrlConYtDlp(videoUrl) {
+  return new Promise((resolve, reject) => {
+    const isWindows = process.platform === 'win32';
+    const cmd = isWindows ? 'py' : 'python3';
+    const args = isWindows
+      ? ['-3.14', '-m', 'yt_dlp', '-g', '-f', 'bestaudio', videoUrl]
+      : ['-m', 'yt_dlp', '-g', '-f', 'bestaudio', videoUrl];
+
+    execFile(cmd, args, { timeout: 15000 }, (err, stdout) => {
+      if (err) {
+        execFile('yt-dlp', ['-g', '-f', 'bestaudio', videoUrl], { timeout: 15000 }, (err2, stdout2) => {
+          if (err2) reject(err2);
+          else resolve(stdout2.trim());
+        });
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
 }
 
 // Reproduce la voz de Pepe con Pause & Swap si hay música sonando
@@ -453,7 +496,7 @@ async function buscarYDarOpciones(query, canalTexto = null) {
     }));
     esperandoSeleccion = true;
 
-    // Timeout de 45 segundos para responder
+    // Timeout de 60 segundos para responder
     if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
     timeoutSeleccion = setTimeout(() => {
       if (esperandoSeleccion) {
@@ -461,7 +504,7 @@ async function buscarYDarOpciones(query, canalTexto = null) {
         opcionesMusica = [];
         logEvent('⏱️ [Tiempo agotado para selección de música]');
       }
-    }, 45000);
+    }, 60000);
 
     const t1 = limpiarTituloParaVoz(opcionesMusica[0].title);
     const t2 = opcionesMusica[1] ? limpiarTituloParaVoz(opcionesMusica[1].title) : null;
@@ -472,12 +515,13 @@ async function buscarYDarOpciones(query, canalTexto = null) {
     if (t3) mensajeVoz += `, y la 3 es ${t3}`;
     mensajeVoz += '. ¿Cuál ponemos? Dime la 1, la 2 o la 3.';
 
-    // Enviar tarjeta interactiva con botones si tenemos canal de texto
-    if (canalTexto) {
+    // Enviar tarjeta interactiva siempre al canal de música designado (1310712749709459516)
+    const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || canalTexto;
+    if (targetCanal && targetCanal.isTextBased()) {
       try {
         const embed = new EmbedBuilder()
           .setColor(0xED4245)
-          .setTitle(`🎵 Resultados para: "${query}"`)
+          .setTitle(`🎵 Resultados de búsqueda: "${query}"`)
           .setDescription(
             opcionesMusica.map((v, i) => `**${i + 1}.** [${v.title}](${v.url}) \`[${v.timestamp}]\``).join('\n\n') +
             '\n\n🗣️ *Dí por voz **"Pepe, pon la 1"**, **"la 2"**, **"la 3"** o pulsa un botón:*'
@@ -491,9 +535,9 @@ async function buscarYDarOpciones(query, canalTexto = null) {
           new ButtonBuilder().setCustomId('musica_cancel').setLabel('❌ Cancelar').setStyle(ButtonStyle.Secondary)
         );
 
-        await canalTexto.send({ embeds: [embed], components: [row] });
+        await targetCanal.send({ embeds: [embed], components: [row] });
       } catch (err) {
-        console.warn('Error enviando botones de música:', err.message);
+        logEvent(`⚠️ Error enviando embed al canal ${CANAL_MUSICA_ID}: ${err.message}`);
       }
     }
 
@@ -509,6 +553,13 @@ async function reproducirCancion(videoInfo) {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
 
+  // Al poner música: pausar modo escucha libre y cambiar a solo mención de "Pepe"
+  if (modoCharlaContinua) {
+    modoAntesDeMusica = true;
+    modoCharlaContinua = false;
+    logEvent('🔒 [Música Activa]: Cambiando automáticamente a modo mención (solo responde si dicen Pepe).');
+  }
+
   try {
     cancionActual = videoInfo;
     const tituloLimpio = limpiarTituloParaVoz(videoInfo.title);
@@ -516,12 +567,19 @@ async function reproducirCancion(videoInfo) {
 
     await reproducirVozPepe(`Sobres, poniendo ${tituloLimpio}. ¡Súbanle al desmadre!`);
 
-    const stream = ytdl.download(videoInfo.url, {
-      filter: { hasAudio: true, hasVideo: false },
-      quality: 'highestaudio'
-    });
+    let streamOrUrl = null;
+    try {
+      streamOrUrl = await obtenerUrlConYtDlp(videoInfo.url);
+      logEvent('📡 [Audio YouTube]: Enlace directo obtenido exitosamente con yt-dlp');
+    } catch (eYt) {
+      logEvent(`⚠️ yt-dlp falló, probando ytdl interno: ${eYt.message}`);
+      streamOrUrl = ytdl.download(videoInfo.url, {
+        filter: { hasAudio: true, hasVideo: false },
+        quality: 'highestaudio'
+      });
+    }
 
-    recursoMusica = createAudioResource(stream, {
+    recursoMusica = createAudioResource(streamOrUrl, {
       inputType: StreamType.Arbitrary,
       inlineVolume: true
     });
@@ -544,7 +602,11 @@ function detenerMusica() {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
   musicPlayer.stop();
-  logEvent('⏹️ [Música detenida]');
+
+  if (modoAntesDeMusica) {
+    modoCharlaContinua = true;
+    logEvent('🟢 [Música Detenida]: Modo charla continua restaurado.');
+  }
 }
 
 function createSilenceStream(durationSeconds = 1) {
@@ -576,21 +638,21 @@ function kickstartVoice() {
 }
 
 function parseComandoVoz(texto) {
-  const t = texto.toLowerCase().trim();
+  const t = (texto || '').toLowerCase().replace(/[¿?¡!.,;:\"']/g, '').trim();
 
   // Si estábamos esperando selección de canción
   if (esperandoSeleccion) {
-    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(1|uno|primera)/i.test(t)) return { type: 'SELECCION', idx: 0 };
-    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(2|dos|segunda)/i.test(t)) return { type: 'SELECCION', idx: 1 };
-    if (/(?:pon\s+)?(?:la\s+)?(?:opci[oó]n\s+)?(3|tres|tercera)/i.test(t)) return { type: 'SELECCION', idx: 2 };
-    if (/(?:cancela|cancelar|ninguna|olv[ií]dalo)/i.test(t)) return { type: 'CANCELAR_SELECCION' };
+    if (/\b(1|uno|primera|primer|opci[oó]n 1)\b/i.test(t)) return { type: 'SELECCION', idx: 0 };
+    if (/\b(2|dos|segunda|segundo|opci[oó]n 2)\b/i.test(t)) return { type: 'SELECCION', idx: 1 };
+    if (/\b(3|tres|tercera|tercer|opci[oó]n 3)\b/i.test(t)) return { type: 'SELECCION', idx: 2 };
+    if (/\b(cancela|cancelar|ninguna|olv[ií]dalo|no|ya no)\b/i.test(t)) return { type: 'CANCELAR_SELECCION' };
   }
 
   // Volumen
-  if (/(?:sube|s[uú]bele|aumenta|m[aá]s)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
+  if (/(sube|s[uú]bele|aumenta|m[aá]s)\s*(al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*alto/i.test(t)) {
     return { type: 'VOLUMEN_SUBIR' };
   }
-  if (/(?:baja|b[aá]jale|disminuye|menos)\s*(?:al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*bajo/i.test(t)) {
+  if (/(baja|b[aá]jale|disminuye|menos)\s*(al|el)?\s*volumen/i.test(t) || /volumen\s*m[aá]s\s*bajo/i.test(t)) {
     return { type: 'VOLUMEN_BAJAR' };
   }
   const mVol = t.match(/volumen\s*(?:al|a)?\s*(\d{1,3})/i);
@@ -599,21 +661,21 @@ function parseComandoVoz(texto) {
   }
 
   // Control de reproducción
-  if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
+  if (/(para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_STOP' };
   }
-  if (/(?:pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
+  if (/(pausa|pa[uú]sale)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
     return { type: 'MUSICA_PAUSE' };
   }
-  if (/(?:despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
+  if (/(despausa|reanuda|sigue|dale\s+play)/i.test(t)) {
     return { type: 'MUSICA_RESUME' };
   }
 
   // Búsqueda de canciones
-  const mSearch = t.match(/(?:pepe\s+)?(?:pon|busca|reproduce|toca)\s+(?:la\s+canci[oó]n\s+(?:de\s+)?|la\s+rola\s+(?:de\s+)?|la\s+m[uú]sica\s+(?:de\s+)?|m[uú]sica\s+(?:de\s+)?|canci[oó]n\s+(?:de\s+)?|rola\s+(?:de\s+)?|de\s+)?(.+)/i);
+  const mSearch = t.match(/(?:pepe\s+)?(?:pon|busca|reproduce|toca|c[oó]loca)\s+(?:esta\s+m[uú]sica\s+|esta\s+canci[oó]n\s+|esta\s+rola\s+|una\s+canci[oó]n\s+|una\s+rola\s+|una\s+m[uú]sica\s+|la\s+canci[oó]n\s+|la\s+rola\s+|la\s+m[uú]sica\s+|m[uú]sica\s+|canci[oó]n\s+|rola\s+)?(?:de\s+)?(.+)/i);
   if (mSearch) {
-    const q = mSearch[1].trim();
-    if (!/^(atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
+    const q = mSearch[1].replace(/^(?:de|la|el|una|un)\s+/i, '').trim();
+    if (q.length > 1 && !/^(?:atenci[oó]n|las pilas|modo|mute|pepe|on|off)$/i.test(q)) {
       return { type: 'BUSCAR_MUSICA', query: q };
     }
   }
@@ -759,8 +821,7 @@ function configurarEscucha(connection) {
         }
 
         if (cmd.type === 'BUSCAR_MUSICA') {
-          const guild = client.guilds.cache.get(PREF_GUILD);
-          const canalTexto = guild?.channels.cache.find(c => c.isTextBased() && c.permissionsFor(client.user)?.has('SendMessages'));
+          const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
           await buscarYDarOpciones(cmd.query, canalTexto);
           return;
         }
@@ -1035,7 +1096,8 @@ client.on('interactionCreate', async (interaction) => {
     if (sub === 'buscar') {
       const q = interaction.options.getString('cancion');
       await interaction.reply({ content: `🔍 Buscando **"${q}"** en YouTube...`, ephemeral: true });
-      await buscarYDarOpciones(q, interaction.channel);
+      const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || interaction.channel;
+      await buscarYDarOpciones(q, targetCanal);
       return;
     }
 
