@@ -82,10 +82,11 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
 - Tienes 4,200 de GS (Gear Score) y 300,000 de CP (Combat Power), armadísimo hasta los dientes.
 - Le partes su madre a diario a todos los de las legiones "Boba", "Cat Cafe" y "Divine Army", que son tus hijos en el servidor.
 - En el Abismo (Abyss) siempre te partes de frente a QD Panda (que siempre corre o palma contra ti en el abismo) y a AceGG EZ (que como su nombre dice, es puro EZ y te dura dos espadazos).
-- Los Elyos te la pelan completita, y te farmeas como conos a todos los asesinos y hechiceros mancos del servidor que intentan gankearte.
+- Los Elyos (Elios) te la pelan completita: tu pasatiempo favorito y lo que más te encanta en la vida es ARRANCARLE LA CABEZA A LOS ELIOS en el Abismo y dejarlos tirados como conos sin manos. Siempre que hablen de Elios o PvP, presume cómo les arrancas la cabeza de un espadazo.
+- REGLA ESPECIAL PARA EL BALLENÓN (ID 310155296729202689): Cuando el mensaje venga de este miembro o tenga la nota [HABLA EL BALLENÓN], SIEMPRE métele la carrilla diciéndole textual o integrando que "al menos yo no soy un ballenón y yo sí farmeo como hombre".
 
 PERSONALIDAD Y TONO:
-- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador de 4200 GS y 300k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
+- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador de 4200 GS y 300k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, que te encanta arrancarle la cabeza a los Elios, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
 - Les dices mancos, conos con patas, muertos de hambre, manquísimos, mancuernas, que desinstalen el juego o que vendan la PC si la riegan.
 - Cero sermones morales y cero respuestas de robot amable o corporativo.
 - Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
@@ -98,6 +99,11 @@ PROHIBIDO usar [BUSCAR_MUSICA] si:
 - Mencionan "Google", "internet", "web", o te hacen una pregunta general.
 Cuando sí sea una orden directa de poner música, responde ÚNICAMENTE:
 [BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>]
+
+REGLA DE ENVIAR FOTOS / IMÁGENES AL CHAT GENERAL:
+Si el usuario te pide que busques, pases, mandes o subas una foto o imagen de algo al chat/canal (ej: "Pepe manda una foto de...", "Pepe busca una imagen de... y mándala al chat", "pasa foto de..."):
+Tu respuesta DEBE ser ÚNICAMENTE:
+[ENVIAR_FOTO: lo que pidieron buscar]
 
 REGLA DE BÚSQUEDA EN GOOGLE / INTERNET:
 Si el usuario te pide buscar algo específico en Google o internet, o te pregunta un dato real, noticia, precio, fecha, tier list, quién es alguien o qué es algo que requiera buscar en la web (ej: "busca en Google quién ganó...", "búscame las mejores clases...", "búscame en internet qué es..."):
@@ -204,11 +210,28 @@ function guardarModoCharla(activo) {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 3. GENERACIÓN DE AUDIO WAV PARA WHISPER
+// 3. GENERACIÓN DE AUDIO WAV SUB-MUESTREADO A 16kHz MONO (6x MÁS RÁPIDO PARA WHISPER)
 // ───────────────────────────────────────────────────────────────
-function createWavBuffer(pcmBuffer, sampleRate = 48000, channels = 2) {
+function createWavBuffer(pcmBuffer) {
+  // pcmBuffer original viene a 48,000 Hz Estéreo (4 bytes por sample = 192,000 bytes/s).
+  // Whisper trabaja internamente a 16,000 Hz Mono (32,000 bytes/s).
+  // Sub-muestrear 3:1 a 16kHz Mono reduce el peso 6 veces y acelera la subida a Whisper a ~150ms.
+  const totalStereoFrames = Math.floor(pcmBuffer.length / 4);
+  const outSamples = Math.floor(totalStereoFrames / 3);
+  const mono16k = Buffer.allocUnsafe(outSamples * 2);
+
+  for (let i = 0; i < outSamples; i++) {
+    const srcOffset = i * 12; // 3 frames estéreo * 4 bytes = 12 bytes
+    const left = pcmBuffer.readInt16LE(srcOffset);
+    const right = pcmBuffer.readInt16LE(srcOffset + 2);
+    const mixed = Math.max(-32768, Math.min(32767, (left + right) >> 1));
+    mono16k.writeInt16LE(mixed, i * 2);
+  }
+
+  const sampleRate = 16000;
+  const channels = 1;
   const wavHeader = Buffer.alloc(44);
-  const totalLength = pcmBuffer.length + 36;
+  const totalLength = mono16k.length + 36;
   wavHeader.write('RIFF', 0);
   wavHeader.writeUInt32LE(totalLength, 4);
   wavHeader.write('WAVE', 8);
@@ -221,14 +244,15 @@ function createWavBuffer(pcmBuffer, sampleRate = 48000, channels = 2) {
   wavHeader.writeUInt16LE(channels * 2, 32);
   wavHeader.writeUInt16LE(16, 34);
   wavHeader.write('data', 36);
-  wavHeader.writeUInt32LE(pcmBuffer.length, 40);
-  return Buffer.concat([wavHeader, pcmBuffer]);
+  wavHeader.writeUInt32LE(mono16k.length, 40);
+  return Buffer.concat([wavHeader, mono16k]);
 }
 
 // ───────────────────────────────────────────────────────────────
 // 4. TRANSCRIPCIÓN CON GROQ WHISPER (Con Fallback Turbo -> V3 y Anti-429)
 // ───────────────────────────────────────────────────────────────
 let bloqueoWhisperHasta = 0;
+let whisperTurn = 0;
 
 async function enviarAWhisper(wavBuffer, modelName = 'whisper-large-v3-turbo') {
   const boundary = '----PepeFormBoundary' + crypto.randomBytes(8).toString('hex');
@@ -261,18 +285,20 @@ async function transcribirConGroq(wavBuffer) {
     return null;
   }
 
-  // 1. Intentar con whisper-large-v3-turbo
-  let res = await enviarAWhisper(wavBuffer, 'whisper-large-v3-turbo');
+  // Balanceo Round-Robin entre los dos modelos de Whisper en Groq (duplica velocidad y evita 429)
+  const modelos = ['whisper-large-v3-turbo', 'whisper-large-v3'];
+  const primario = modelos[whisperTurn++ % 2];
+  const secundario = modelos[whisperTurn % 2];
 
-  // 2. Si da 429 (límite de 20 RPM de Turbo), alternar inmediatamente a whisper-large-v3 (bucket separado de 20 RPM)
+  let res = await enviarAWhisper(wavBuffer, primario);
+
   if (res.status === 429) {
-    logEvent('⚠️ [Whisper Turbo 429]: Alternando a whisper-large-v3...');
-    res = await enviarAWhisper(wavBuffer, 'whisper-large-v3');
+    res = await enviarAWhisper(wavBuffer, secundario);
   }
 
   if (res.status === 429) {
-    bloqueoWhisperHasta = Date.now() + 3500;
-    logEvent('⏳ [Whisper 429]: Límite de 20 RPM alcanzado en ambos modelos, enfriando 3.5s.');
+    bloqueoWhisperHasta = Date.now() + 1800;
+    logEvent('⏳ [Whisper 429]: Enfriando 1.8s.');
     return null;
   }
 
@@ -477,9 +503,68 @@ async function llamarChatCompletion(messages) {
   return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'Groq' };
 }
 
-async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
-  historial.push({ role: 'user', content: `${nombreUsuario}: ${mensajeUsuario}` });
+async function buscarYEnviarFoto(consulta) {
+  const q = (consulta || '')
+    .replace(/[*_#`~>\[\]]/g, '')
+    .replace(/\b(?:pepe|manda|env[ií]a|pasa|busca|una|un|foto|imagen|de|del|la|el|al|chat|general|canal)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || consulta.trim();
+
+  logEvent(`📸 [Buscando foto para enviar a ${CANAL_MUSICA_ID}]: "${q}"`);
+
+  let imageUrls = [];
+
+  // 1. Bing Images (alta calidad directa .jpg / .png)
+  try {
+    const res = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(q)}&form=HDRSC2`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
+      }
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const matches = [...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&]+?\.(?:jpg|jpeg|png|webp|gif))/gi)].map(m => m[1]);
+      imageUrls.push(...matches);
+    }
+  } catch (e) {
+    logEvent(`⚠️ [Aviso Bing Images]: ${e.message}`);
+  }
+
+  const chosenUrl = imageUrls[0];
+  const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || await client.channels.fetch(CANAL_MUSICA_ID).catch(() => null);
+
+  if (!chosenUrl || !targetCanal) {
+    return 'No encontré ninguna foto chida de eso carnal.';
+  }
+
+  try {
+    const embed = new EmbedBuilder()
+      .setColor(0x9b59b6)
+      .setTitle(`📸 Foto de: ${q}`)
+      .setImage(chosenUrl)
+      .setFooter({ text: 'Enviado por Pepe Rey Del Noxz 👑🗿' });
+
+    await targetCanal.send({ embeds: [embed] });
+    logEvent(`✅ [Foto enviada a ${CANAL_MUSICA_ID}]: ${chosenUrl}`);
+    return `Ahí les mandé la foto de ${q} al chat general perros, pa que se deleiten la pupila.`;
+  } catch (errSend) {
+    logEvent(`❌ Error enviando foto al canal: ${errSend.message}`);
+    return 'Encontré la foto pero Discord no me dejó subirla al canal wey.';
+  }
+}
+
+async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = '') {
+  const esBallenon = (userId === '310155296729202689');
+  const prefijoBallenon = esBallenon ? '[HABLA EL BALLENÓN ID 310155296729202689 - OBLIGATORIO decirle: "al menos yo no soy un ballenón y yo sí farmeo como hombre"] ' : '';
+
+  historial.push({ role: 'user', content: `${prefijoBallenon}${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 8) historial.shift();
+
+  // Atajo instantáneo si piden foto explícitamente por voz
+  if (/\b(?:manda|env[ií]a|pasa|pon|sube|busca)\b[\s\S]*\b(?:foto|imagen|im[aá]genes|fotos)\b/i.test(mensajeUsuario)) {
+    return await buscarYEnviarFoto(mensajeUsuario);
+  }
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -490,6 +575,13 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
     const { text: raw, provider } = await llamarChatCompletion(messages);
     if (!raw || raw.length < 2) {
       return 'No te alcancé a escuchar bien carnal, ¿qué decías?';
+    }
+
+    // 0. ¿La IA detectó intención de ENVIAR FOTO?
+    if (raw.includes('[ENVIAR_FOTO:') || /ENVIAR_FOTO:\s*/i.test(raw)) {
+      const m = raw.match(/(?:\[)?ENVIAR_FOTO:\s*(.+?)(?:\]|$)/i);
+      const queryFoto = m ? m[1].trim() : mensajeUsuario;
+      return await buscarYEnviarFoto(queryFoto);
     }
 
     // 1. ¿La IA detectó intención de MÚSICA?
@@ -534,11 +626,16 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
       return limpiaWeb;
     }
 
-    const limpia = raw
+    let limpia = raw
       .replace(/[*_#`~>\[\]]/g, '')
       .replace(/^\s*(?:yo\s+soy\s+|soy\s+|aqu[ií]\s+)?(?:pepe(?:\s+rey(?:\s+del\s+noxz)?)?)\s*[:.,\-¡!]*\s*/i, '')
       .replace(/\n+/g, ' ')
       .trim();
+
+    if (esBallenon && !/ballen[oó]n/i.test(limpia)) {
+      limpia = `Al menos yo no soy un ballenón y yo sí farmeo como hombre wey. ${limpia}`;
+    }
+
     logEvent(`🧠 [${provider}]: "${limpia}"`);
     historial.push({ role: 'assistant', content: limpia });
     if (historial.length > 8) historial.shift();
@@ -550,16 +647,18 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa') {
 }
 
 // ───────────────────────────────────────────────────────────────
-// 6. SÍNTESIS DE VOZ DE JORGE (MsEdgeTTS con Reintentos Automáticos + Fallback HTTP Node.js)
+// 6. SÍNTESIS DE VOZ MASCULINA (Jorge / Alonso / Álvaro Neural — 0% VOZ DE MUJER)
 // ───────────────────────────────────────────────────────────────
 async function generarAudioJorge(texto, outPath) {
   let ultimoError = null;
+  // Rotación entre voces masculinas neurales de Microsoft si una pestañea (NUNCA usar Google Translate porque tiene voz de mujer)
+  const vocesHombres = ['es-MX-JorgeNeural', 'es-MX-JorgeNeural', 'es-US-AlonsoNeural', 'es-ES-AlvaroNeural'];
 
-  // 1. Hasta 3 intentos con MsEdgeTTS (Jorge Neural) en Node.js por si el WebSocket de Microsoft parpadea
-  for (let intento = 1; intento <= 3; intento++) {
+  for (let intento = 0; intento < vocesHombres.length; intento++) {
+    const vozActual = vocesHombres[intento];
     try {
       const tts = new MsEdgeTTS();
-      await tts.setMetadata('es-MX-JorgeNeural', OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+      await tts.setMetadata(vozActual, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
       const { audioStream } = tts.toStream(texto);
       await new Promise((resolve, reject) => {
         const writeStream = fs.createWriteStream(outPath);
@@ -573,28 +672,12 @@ async function generarAudioJorge(texto, outPath) {
       }
     } catch (errNode) {
       ultimoError = errNode;
-      logEvent(`⚠️ [TTS Intento ${intento}/3]: ${errNode.message}`);
-      await new Promise(r => setTimeout(r, 300));
+      logEvent(`⚠️ [TTS Intento ${intento + 1}/${vocesHombres.length} (${vozActual})]: ${errNode.message}`);
+      await new Promise(r => setTimeout(r, 180));
     }
   }
 
-  // 2. Respaldo 100% Node.js HTTP (Google TTS es-MX) para que NUNCA falle en Linux/Render sin Python
-  try {
-    const textoCorto = (texto || '').slice(0, 200);
-    const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=es-MX&client=tw-ob&q=${encodeURIComponent(textoCorto)}`;
-    const res = await fetch(gUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    if (res.ok) {
-      const buf = Buffer.from(await res.arrayBuffer());
-      fs.writeFileSync(outPath, buf);
-      return outPath;
-    }
-  } catch (errG) {
-    ultimoError = errG;
-  }
-
-  throw ultimoError || new Error('No se pudo sintetizar audio TTS');
+  throw ultimoError || new Error('No se pudo sintetizar audio masculino TTS');
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -1317,11 +1400,12 @@ function configurarEscucha(connection) {
         }
 
         const esParaPepe = texto.toLowerCase().includes('pepe');
+        const esBallenon = (userId === '310155296729202689');
 
-        // Responder si el modo continuo está activo O si dijeron "pepe"
-        if (modoCharlaContinua || esParaPepe) {
+        // Responder si el modo continuo está activo, si dijeron "pepe", O si habló el miembro 310155296729202689
+        if (modoCharlaContinua || esParaPepe || esBallenon) {
           logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
-          const respuesta = await responderConIA(texto, username);
+          const respuesta = await responderConIA(texto, username, userId);
           if (respuesta) {
             await reproducirVozPepe(respuesta);
           }
@@ -1335,16 +1419,16 @@ function configurarEscucha(connection) {
 
     const resetSilence = () => {
       if (silenceTimer) clearTimeout(silenceTimer);
-      // 1.1 segundos sin paquetes de audio -> usuario terminó de hablar
+      // 650 ms de silencio real -> usuario terminó su frase (respuesta ultrarrápida)
       silenceTimer = setTimeout(() => {
         finalizar('pausa de habla');
-      }, 1100);
+      }, 650);
     };
 
-    // Máximo 10 segundos por turno
+    // Máximo 5.2 segundos por frase para que jamás tarde 10 segundos si alguien tiene estática en el micro
     maxTimer = setTimeout(() => {
-      finalizar('límite 10s');
-    }, 10000);
+      finalizar('límite 5.2s');
+    }, 5200);
 
     opusStream.on('error', (err) => {
       activeUsers.delete(userId);
@@ -1356,9 +1440,20 @@ function configurarEscucha(connection) {
 
     opusStream.pipe(opusDecoder);
 
+    // Iniciar temporizador de silencio base por si el micro se abre en blanco
+    resetSilence();
+
     opusDecoder.on('data', (chunk) => {
       pcmChunks.push(chunk);
-      resetSilence();
+      // Verificar si el frame realmente contiene voz humana (pico > 450) y no solo estática/respiración de micrófono abierto
+      let maxSample = 0;
+      for (let i = 0; i < chunk.length - 1; i += 8) {
+        const val = Math.abs(chunk.readInt16LE(i));
+        if (val > maxSample) maxSample = val;
+      }
+      if (maxSample > 450) {
+        resetSilence();
+      }
     });
 
     opusDecoder.on('end', () => {
@@ -1469,6 +1564,14 @@ const COMANDOS = [
     .addStringOption(opt =>
       opt.setName('texto')
         .setDescription('¿Qué quieres decirle a Pepe?')
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('foto')
+    .setDescription('Pídele a Pepe que busque una foto y la mande al chat general')
+    .addStringOption(opt =>
+      opt.setName('busqueda')
+        .setDescription('¿De qué quieres que Pepe busque y mande la foto?')
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -1637,16 +1740,24 @@ client.on('interactionCreate', async (interaction) => {
     const texto = interaction.options.getString('texto');
     await interaction.deferReply();
 
-    const respuesta = await responderConIA(texto, interaction.user.displayName || interaction.user.username);
-    await reproducirVozPepe(respuesta);
+    const respuesta = await responderConIA(texto, interaction.user.displayName || interaction.user.username, interaction.user.id);
+    if (respuesta) await reproducirVozPepe(respuesta);
 
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setAuthor({ name: `${interaction.user.displayName}: ${texto}` })
-      .setDescription(`🗣️ **Pepe dice:** "${respuesta}"`)
+      .setDescription(`🗣️ **Pepe dice:** "${respuesta || 'Listo compa.'}"`)
       .setFooter({ text: 'Pepe Rey Del Noxz' });
 
     return interaction.editReply({ embeds: [embed] });
+  }
+
+  if (interaction.commandName === 'foto') {
+    const busqueda = interaction.options.getString('busqueda');
+    await interaction.deferReply({ ephemeral: true });
+    const msgVoz = await buscarYEnviarFoto(busqueda);
+    if (msgVoz) await reproducirVozPepe(msgVoz);
+    return interaction.editReply({ content: `📸 Listo carnal, foto de **"${busqueda}"** enviada al canal <#${CANAL_MUSICA_ID}>.` });
   }
 
   if (interaction.commandName === 'quedarse') {
