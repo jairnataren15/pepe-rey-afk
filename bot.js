@@ -504,19 +504,26 @@ async function llamarChatCompletion(messages) {
 }
 
 async function buscarYEnviarFoto(consulta) {
-  const q = (consulta || '')
+  // Limpiar signos de puntuación, muletillas y palabras de relleno
+  let q = (consulta || '')
     .replace(/[*_#`~>\[\]]/g, '')
-    .replace(/\b(?:pepe|manda|env[ií]a|pasa|busca|una|un|foto|imagen|de|del|la|el|al|chat|general|canal)\b/gi, ' ')
+    .replace(/[¿?¡!.,;:\"'()]/g, ' ')
+    .replace(/\b(?:pepe|manda|mandame|env[ií]a|env[ií]ame|pasa|pasame|busca|buscame|pon|sube|una|un|unos|unas|foto|fotos|imagen|imagenes|im[aá]genes|de|del|la|el|los|las|al|en|chat|general|canal|por\s+fa|por\s+favor|wey|perro|carnal)\b/gi, ' ')
     .replace(/\s+/g, ' ')
-    .trim() || consulta.trim();
+    .trim();
+
+  // Si por el reconocimiento de voz dijo "ion 2" o "aion", asegurar la franquicia correcta
+  q = q.replace(/\bion\s*2\b/gi, 'Aion 2').replace(/\bion\b/gi, 'Aion');
+
+  if (!q || q.length < 2) q = 'Aion 2 wallpaper 4k';
 
   logEvent(`📸 [Buscando foto para enviar a ${CANAL_MUSICA_ID}]: "${q}"`);
 
   let imageUrls = [];
 
-  // 1. Bing Images (alta calidad directa .jpg / .png)
+  // 1. Bing Images API abierta con filtro de imágenes reales (evitar banners de texto o webs de stock)
   try {
-    const res = await fetch(`https://www.bing.com/images/search?q=${encodeURIComponent(q)}&form=HDRSC2`, {
+    const res = await fetch(`https://www.bing.com/images/async?q=${encodeURIComponent(q)}&first=0&count=25&adlt=off`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
@@ -524,11 +531,31 @@ async function buscarYEnviarFoto(consulta) {
     });
     if (res.ok) {
       const html = await res.text();
-      const matches = [...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&]+?\.(?:jpg|jpeg|png|webp|gif))/gi)].map(m => m[1]);
-      imageUrls.push(...matches);
+      const matches = [...html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&]+?\.(?:jpg|jpeg|png|webp))/gi)].map(m => m[1]);
+      // Filtrar URLs basura de logos o stock
+      const filtered = matches.filter(u => !/impossible|alamy|shutterstock|getty|depositphotos|stock|favicon|logo/i.test(u));
+      imageUrls.push(...(filtered.length > 0 ? filtered : matches));
     }
   } catch (e) {
     logEvent(`⚠️ [Aviso Bing Images]: ${e.message}`);
+  }
+
+  // 2. Si falló o no encontró, intentar en DuckDuckGo Images
+  if (imageUrls.length === 0) {
+    try {
+      const ddgTokenRes = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(q)}&t=h_&iax=images&ia=images`);
+      const ddgHtml = await ddgTokenRes.text();
+      const vqd = ddgHtml.match(/vqd=([0-9-]+)/)?.[1];
+      if (vqd) {
+        const ddgApi = await fetch(`https://duckduckgo.com/i.js?l=es-es&o=json&q=${encodeURIComponent(q)}&vqd=${vqd}&f=,,,`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+        const ddgJson = await ddgApi.json();
+        for (const item of (ddgJson.results || [])) {
+          if (item.image) imageUrls.push(item.image);
+        }
+      }
+    } catch (e) {}
   }
 
   const chosenUrl = imageUrls[0];
