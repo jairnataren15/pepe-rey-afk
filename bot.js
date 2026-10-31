@@ -83,7 +83,9 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
 - Le partes su madre a diario a todos los de las legiones "Boba", "Cat Cafe" y "Divine Army", que son tus hijos en el servidor.
 - En el Abismo (Abyss) siempre te partes de frente a QD Panda (que siempre corre o palma contra ti en el abismo) y a AceGG EZ (que como su nombre dice, es puro EZ y te dura dos espadazos).
 - Los Elyos (Elios) te la pelan completita: tu pasatiempo favorito y lo que más te encanta en la vida es ARRANCARLE LA CABEZA A LOS ELIOS en el Abismo y dejarlos tirados como conos sin manos. Siempre que hablen de Elios o PvP, presume cómo les arrancas la cabeza de un espadazo.
-- REGLA ESPECIAL PARA EL BALLENÓN (ID 310155296729202689): Cuando el mensaje venga de este miembro o tenga la nota [HABLA EL BALLENÓN], SIEMPRE métele la carrilla diciéndole textual o integrando que "al menos yo no soy un ballenón y yo sí farmeo como hombre".
+- REGLA ESPECIAL PARA EL BALLENÓN (ID 310155296729202689):
+  * Si este miembro habla de Aion, hace preguntas o platica de cualquier tema normal, respóndele NORMAL con tu estilo gamer de compas. PROHIBIDO decirle lo del ballenón si NO te está insultando.
+  * ÚNICAMENTE si este miembro te INSULTA a ti (Pepe), te dice manco, pendejo, cállate, no sirves o te falta al respeto, ahí SÍ humíllalo diciéndole: "al menos yo no soy un ballenón y yo sí farmeo como hombre".
 
 PERSONALIDAD Y TONO:
 - Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador de 4200 GS y 300k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, que te encanta arrancarle la cabeza a los Elios, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
@@ -581,9 +583,24 @@ async function buscarYEnviarFoto(consulta) {
   }
 }
 
+function detectaInsulto(texto) {
+  const t = (texto || '').toLowerCase();
+  const insultosRegex = /\b(?:tonto|tontos|pendejo|pendejos|idiota|idiotas|est[uú]pido|est[uú]pidos|manco|mancos|in[uú]til|in[uú]tiles|c[aá]llate|c[aá]llese|hocico|no\s+sirves|puto|putos|culero|culeros|mierda|basura|perra|pendejada|chupa|verga|chinga|chingas|chingada|baboso|babosos|tarado|tarados|feo|meco|mecos|asco|calla\s+la\s+boca|chingas\s+a\s+tu\s+madre|callate\s+alv|c[aá]llate\s+wey|bot\s+manco|bot\s+pendejo|bot\s+inutil|no\s+sabes\s+nada|callese|cállate)\b/i;
+  return insultosRegex.test(t);
+}
+
 async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = '') {
   const esBallenon = (userId === '310155296729202689');
-  const prefijoBallenon = esBallenon ? '[HABLA EL BALLENÓN ID 310155296729202689 - OBLIGATORIO decirle: "al menos yo no soy un ballenón y yo sí farmeo como hombre"] ' : '';
+  const esInsulto = esBallenon && detectaInsulto(mensajeUsuario);
+
+  let prefijoBallenon = '';
+  if (esBallenon) {
+    if (esInsulto) {
+      prefijoBallenon = '[HABLA EL BALLENÓN ID 310155296729202689 - TE ESTÁ INSULTANDO O PROVOCANDO: Aquí SÍ búrlate de él y humíllalo diciéndole: "al menos yo no soy un ballenón y yo sí farmeo como hombre"] ';
+    } else {
+      prefijoBallenon = '[HABLA EL MIEMBRO ID 310155296729202689 - Está platicando normal: Trátalo normal con tu humor de compas, PROHIBIDO decirle lo del ballenón porque no te está insultando] ';
+    }
+  }
 
   historial.push({ role: 'user', content: `${prefijoBallenon}${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 8) historial.shift();
@@ -659,7 +676,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
       .replace(/\n+/g, ' ')
       .trim();
 
-    if (esBallenon && !/ballen[oó]n/i.test(limpia)) {
+    if (esBallenon && esInsulto && !/ballen[oó]n/i.test(limpia)) {
       limpia = `Al menos yo no soy un ballenón y yo sí farmeo como hombre wey. ${limpia}`;
     }
 
@@ -1428,9 +1445,10 @@ function configurarEscucha(connection) {
 
         const esParaPepe = texto.toLowerCase().includes('pepe');
         const esBallenon = (userId === '310155296729202689');
+        const insultoABot = esBallenon && detectaInsulto(texto);
 
-        // Responder si el modo continuo está activo, si dijeron "pepe", O si habló el miembro 310155296729202689
-        if (modoCharlaContinua || esParaPepe || esBallenon) {
+        // Responder si el modo continuo está activo, si dijeron "pepe", O si el ballenón insulta a Pepe
+        if (modoCharlaContinua || esParaPepe || insultoABot) {
           logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username, userId);
           if (respuesta) {
