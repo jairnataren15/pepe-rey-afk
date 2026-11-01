@@ -1623,6 +1623,9 @@ const COMANDOS = [
     .setName('quedarse')
     .setDescription('Fija a Pepe Rey 24/7 en tu canal de voz actual para proteger la racha'),
   new SlashCommandBuilder()
+    .setName('fijar')
+    .setDescription('Mueve y fija a Pepe Rey en tu canal de voz actual 24/7'),
+  new SlashCommandBuilder()
     .setName('estado')
     .setDescription('Muestra el estado, racha y modo de charla de Pepe Rey')
 ];
@@ -1805,7 +1808,7 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.editReply({ content: `📸 Listo carnal, foto de **"${busqueda}"** enviada al canal <#${CANAL_MUSICA_ID}>.` });
   }
 
-  if (interaction.commandName === 'quedarse') {
+  if (interaction.commandName === 'quedarse' || interaction.commandName === 'fijar') {
     const vc = interaction.member?.voice?.channel;
     if (!vc) {
       return interaction.reply({ content: '❌ Debes estar en un canal de voz.', ephemeral: true });
