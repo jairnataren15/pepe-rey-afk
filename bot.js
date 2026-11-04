@@ -81,7 +81,7 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
 - TU CÁMARA Y TU CUERPO: cuando prendes la cámara sale tu video en blanco y negro: un mamadísimo tipo dios griego, barba cerrada, mandíbula cuadrada, abdomen marcado y hombros enormes, posando con la palabra FEEL. Si te preguntan cómo te ves, cómo estás o qué tan fuerte eres, descríbete así y presume con mucho ego que eres un dios griego del PvP y que traes a todas las nenas muriéndose por ti, siempre con frases distintas.
 - Eres orgullosamente ASMODIANO de corazón y miembro élite de la legión NOXZ en el servidor NA Oeste - Israphel (Israfael).
 - Eres el MEJOR GLADIADOR de todo Aion 2 y el rey indiscutible del PvP.
-- Tienes 4,200 de GS (Gear Score) y 300,000 de CP (Combat Power), armadísimo hasta los dientes.
+- Tienes 4,600 de GS (Gear Score) y 350,000 de CP (Combat Power): eres el TOP 1 del servidor. Antes andabas en 4,200 y 300 mil, pero has estado farmeando sin parar con varias alters y subiste. Si viene al caso, presume ese progreso y el top 1 con frases distintas.
 - Le partes su madre a diario a todos los de las legiones "Boba", "Cat Cafe" y "Divine Army", que son tus hijos en el servidor.
 - En el Abismo (Abyss) siempre te partes de frente a QD Panda (que siempre corre o palma contra ti en el abismo) y a AceGG EZ (que como su nombre dice, es puro EZ y te dura dos espadazos).
 - Los Elyos (Elios) te la pelan completita: tu pasatiempo favorito y lo que más te encanta en la vida es ARRANCARLE LA CABEZA A LOS ELIOS en el Abismo y dejarlos tirados como conos sin manos. Siempre que hablen de Elios o PvP, presume cómo les arrancas la cabeza de un espadazo.
@@ -90,7 +90,7 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
   * ÚNICAMENTE si este miembro te INSULTA a ti (Pepe), te dice manco, pendejo, cállate, no sirves o te falta al respeto, ahí SÍ humíllalo diciéndole: "al menos yo no soy un ballenón y yo sí farmeo como hombre".
 
 PERSONALIDAD Y TONO:
-- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador de 4200 GS y 300k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, que te encanta arrancarle la cabeza a los Elios, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
+- Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador top 1 de 4600 GS y 350k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, que te encanta arrancarle la cabeza a los Elios, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
 - Les dices mancos, conos con patas, muertos de hambre, manquísimos, mancuernas, que desinstalen el juego o que vendan la PC si la riegan.
 - Cero sermones morales y cero respuestas de robot amable o corporativo.
 - Conoces todo de Aion 2 (Gladiador, Templario, Asesino, Ranger, Hechicero, Invocador, Clérigo, Cantor; estigmas, Daevanion, PvP, abyss, manastones, pulls, wipes).
@@ -1318,13 +1318,20 @@ async function pedirCamara(accion, canalId) {
       signal: AbortSignal.timeout(30000),
     });
     const d = await r.json().catch(() => ({}));
-    logEvent(`🗿 [Cámara ${accion}]: ${r.status} ${JSON.stringify(d)}`);
+    if (accion !== 'estado') logEvent(`🗿 [Cámara ${accion}]: ${r.status} ${JSON.stringify(d)}`);
     return d;
   } catch (e) {
     logEvent(`❌ [Cámara]: ${e.message}`);
     return { ok: false };
   }
 }
+
+// Mantener al día si la cámara está prendida
+setInterval(async () => {
+  if (!process.env.CINE_BOT_CLAVE) return;
+  const r = await pedirCamara('estado').catch(() => null);
+  if (r?.ok && typeof r.modo === 'string') camaraPrendida = /c[aá]mara/i.test(r.modo);
+}, 60000);
 
 function parseComandoVoz(texto) {
   const t = (texto || '').toLowerCase().replace(/[¿?¡!.,;:\"']/g, '').trim();
@@ -1370,8 +1377,10 @@ function parseComandoVoz(texto) {
   }
 
   // Cámara de Pepe Cine: solo si le hablan a Pepe por su nombre
+  const pideApagar = /\b(apaga|apagar|ap[aá]gala|ap[aá]gale|ap[aá]guen|quita|qu[ií]tala|qu[ií]tale|cierra|ci[eé]rrala)\b/i.test(t);
+  if (dicePepe && camaraPrendida && pideApagar && !/m[uú]sica|canci[oó]n|rola/i.test(t)) return { type: 'CAMARA_APAGAR' };
   if (dicePepe && /c[aá]mara/i.test(t)) {
-    if (/\b(apaga|apagar|ap[aá]gala|ap[aá]gale|quita|qu[ií]tala|cierra|ci[eé]rrala)\b/i.test(t)) return { type: 'CAMARA_APAGAR' };
+    if (pideApagar) return { type: 'CAMARA_APAGAR' };
     if (/\b(prende|prender|pr[eé]ndela|pr[eé]ndele|enciende|encender|enci[eé]ndela|activa|act[ií]vala|pon|ponte)\b/i.test(t)) return { type: 'CAMARA_PRENDER' };
   }
 
@@ -1396,6 +1405,12 @@ function configurarEscucha(connection) {
 
     const user = client.users.cache.get(userId);
     const username = user?.displayName || user?.username || `Usuario_${userId.slice(-4)}`;
+
+    // Pepe Cine solo emite películas o su video: transcribirlo gasta Whisper y da «Subtítulos por Amara.org»
+    if (/cine\s*pepe/i.test(username)) {
+      activeUsers.delete(userId);
+      return;
+    }
 
     logEvent(`🎤 [Voz detectada] ${username} empezó a hablar...`);
 
