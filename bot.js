@@ -78,6 +78,7 @@ const SYSTEM_PROMPT = `Eres Pepe Rey Del Noxz, el compa más mamoncillo, troll, 
 
 TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
 - Tu foto de perfil y apariencia física es Epstein en modo GigaChad (con suéter negro "JFE" y mandíbula cuadrada tallada con cincel). Eres el DIOS DEL MEWING y del looksmaxxing; cuando te pregunten por tu foto de perfil, tu cara o tu aspecto, presume que eres Epstein GigaChad tirando rostro y haciendo mewing mientras farmeas mancos.
+- TU CÁMARA Y TU CUERPO: cuando prendes la cámara sale tu video en blanco y negro: un mamadísimo tipo dios griego, barba cerrada, mandíbula cuadrada, abdomen marcado y hombros enormes, posando con la palabra FEEL. Si te preguntan cómo te ves, cómo estás o qué tan fuerte eres, descríbete así y presume con mucho ego que eres un dios griego del PvP y que traes a todas las nenas muriéndose por ti, siempre con frases distintas.
 - Eres orgullosamente ASMODIANO de corazón y miembro élite de la legión NOXZ en el servidor NA Oeste - Israphel (Israfael).
 - Eres el MEJOR GLADIADOR de todo Aion 2 y el rey indiscutible del PvP.
 - Tienes 4,200 de GS (Gear Score) y 300,000 de CP (Combat Power), armadísimo hasta los dientes.
@@ -126,6 +127,7 @@ REGLAS DE RESPUESTA DE CHARLA:
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
 let botHablando = false; // anti-eco
+let camaraPrendida = false;
 let silencioHasta = 0; // tras «Pepe cállate», en modo continuo no se mete solo a la plática
 
 // Filtro de alucinaciones típicas que Whisper genera cuando hay silencio o estática
@@ -601,7 +603,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
   }
 
   const contexto = userId ? await leerContexto(userId) : { hechos: [], recientes: [], frases: [] };
-  const estado = `\n\nESTADO ACTUAL: ${cancionActual ? `está sonando música (${cancionActual.title})` : 'NO hay música sonando'}.`;
+  const estado = `\n\nESTADO ACTUAL: ${cancionActual ? `está sonando música (${cancionActual.title})` : 'NO hay música sonando'}. Tu cámara está ${camaraPrendida ? 'PRENDIDA' : 'apagada'}.`;
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT + estado + bloqueMemoria(contexto, nombreUsuario, yaEnConversacion) },
     ...historial
@@ -1250,6 +1252,52 @@ function kickstartVoice() {
   }
 }
 
+const FRASES_CAMARA = {
+  prender: [
+    'Yo sé que quieren ver a este dios griego, contemplen mi cuerpo y esta mandíbula de gigachad.',
+    'Ahí les va el dios del PvP, no se vayan a desmayar, mancos.',
+    'Prendo la cámara nomás porque les hace falta ver lo que es un cuerpo de verdad.',
+    'Admiren, conos, esto no se farmea, esto se nace.',
+    'Les doy el privilegio de verme, tómenle captura porque esto no pasa seguido.',
+  ],
+  apagar: [
+    'Ya pues, mejor la quito, no vaya a ser que se terminen de enamorar de un dios como yo.',
+    'Se acabó la función, no tengo tiempo para ustedes, ya traigo demasiadas nenas muriéndose por este gigachad.',
+    'Suficiente, mucho cuerpo divino para unos mancos como ustedes.',
+    'La apago antes de que se me acostumbren, esto es solo para quien se lo merece.',
+    'Ya contemplaron bastante, vayan a llorar a otro canal, conos.',
+  ],
+};
+const frasesCamaraUsadas = [];
+
+// Una frase mamona y distinta cada vez; si la IA tarda o falla, una de las fijas
+async function fraseCamara(accion) {
+  const fijas = FRASES_CAMARA[accion];
+  const libres = fijas.filter((f) => !frasesCamaraUsadas.includes(f));
+  const respaldo = (libres.length ? libres : fijas)[Math.floor(Math.random() * (libres.length || fijas.length))];
+  let frase = respaldo;
+  try {
+    const pedido = llamarChatCompletion([
+      {
+        role: 'system',
+        content: `Eres Pepe Rey del Noxz, gladiador de Aion 2, mamón, egocéntrico y gracioso; hablas con jerga mexicana. Te crees un dios griego, dios del PvP, mamadísimo y con mandíbula de gigachad. Acabas de ${accion === 'prender' ? 'PRENDER tu cámara para que tus compas te contemplen' : 'APAGAR tu cámara porque te lo pidieron, y lo haces como si ellos se lo perdieran'}.
+Di UNA sola frase corta (máximo 22 palabras) para voz, sin comillas, sin asteriscos y sin decir tu nombre. Sé ingenioso y distinto.
+Ejemplos del tono, NO los copies:
+- ${fijas.slice(0, 3).join('\n- ')}
+NO repitas estas que ya dijiste:
+- ${frasesCamaraUsadas.join('\n- ') || 'ninguna'}`,
+      },
+      { role: 'user', content: accion === 'prender' ? 'prende la cámara' : 'apaga la cámara' },
+    ]);
+    const { text, provider } = await Promise.race([pedido, new Promise((_, mal) => setTimeout(() => mal(new Error('tardó')), 2500))]);
+    const limpia = (text || '').replace(/[*_#`~>\[\]"]/g, '').replace(/\n+/g, ' ').trim();
+    if (limpia.length > 8 && provider !== 'Sistema') frase = limpia;
+  } catch {}
+  frasesCamaraUsadas.push(frase);
+  if (frasesCamaraUsadas.length > 12) frasesCamaraUsadas.shift();
+  return frase;
+}
+
 // Enciende o apaga la cámara de Pepe Cine, que vive en la laptop. El link fijo
 // redirige al túnel vigente; un POST no sobrevive a la redirección, así que
 // primero se pregunta adónde apunta.
@@ -1482,9 +1530,14 @@ function configurarEscucha(connection) {
 
         if (cmd.type === 'CAMARA_PRENDER' || cmd.type === 'CAMARA_APAGAR') {
           const prender = cmd.type === 'CAMARA_PRENDER';
-          const r = await pedirCamara(prender ? 'prender' : 'apagar', conexionActual?.joinConfig?.channelId);
-          if (r.ok) await reproducirVozPepe(prender ? 'Sobres, ahí va la cámara.' : 'Ya apagué la cámara, carnal.');
-          else if (r.error === 'ocupado') await reproducirVozPepe('Ahorita no se puede carnal, están viendo una película.');
+          const accion = prender ? 'prender' : 'apagar';
+          const [r, frase] = await Promise.all([pedirCamara(accion, conexionActual?.joinConfig?.channelId), fraseCamara(accion)]);
+          if (r.ok) {
+            camaraPrendida = prender;
+            await reproducirVozPepe(r.yaEstaba ? (prender ? 'Ya la tienes prendida, wey, deja de babear y contempla.' : 'Ni la tenía prendida, carnal, ya quisieras.') : frase);
+            historial.push({ role: 'assistant', content: frase });
+            if (historial.length > 14) historial.shift();
+          } else if (r.error === 'ocupado') await reproducirVozPepe('Ahorita no se puede carnal, están viendo una película.');
           else await reproducirVozPepe('No pude con la cámara, el cine no me contesta.');
           return;
         }
