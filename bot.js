@@ -17,6 +17,7 @@ import { Ytdl } from '@distube/ytdl-core';
 import play from 'play-dl';
 import { ytmp3 } from '@vreden/youtube_scraper';
 import { asegurarYtDlp } from './install-ytdlp.js';
+import { leerContexto, bloqueMemoria, recordar } from './memoria.js';
 
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -117,11 +118,15 @@ REGLAS DE RESPUESTA DE CHARLA:
 1. Máximo 1 o 2 oraciones cortas, directas y con remate cómico mamón (se reproduce en voz alta por TTS en el canal).
 2. Sé afilado, variado y espontáneo. Cero respuestas de robot amable.
 3. NUNCA uses viñetas, negritas ni asteriscos.
-4. PROHIBIDO iniciar tus frases diciendo tu propio nombre ("Pepe Rey Del Noxz", "Pepe Rey:", "Soy Pepe Rey", etc.). Entra directo al madrazo o respuesta como una persona real hablando.`;
+4. PROHIBIDO iniciar tus frases diciendo tu propio nombre ("Pepe Rey Del Noxz", "Pepe Rey:", "Soy Pepe Rey", etc.). Entra directo al madrazo o respuesta como una persona real hablando.
+5. Contesta a LO QUE TE DIJERON. Si te preguntan algo, respóndelo; no sueltes tu lore ni tus stats si no viene al caso. Tus frases de cajón (GS, CP, Elios, mewing) son condimento, no toda la respuesta.
+6. No repitas los mismos insultos, remates ni estructura de tus frases anteriores. Cada respuesta debe sonar distinta.
+7. No digas que hiciste algo (poner o quitar música, buscar, mandar fotos) si no lo hiciste de verdad. El ESTADO ACTUAL te dice si hay música.`;
 
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
 let botHablando = false; // anti-eco
+let silencioHasta = 0; // tras «Pepe cállate», en modo continuo no se mete solo a la plática
 
 // Filtro de alucinaciones típicas que Whisper genera cuando hay silencio o estática
 const FANTASMAS_WHISPER = [
@@ -449,60 +454,44 @@ async function buscarEnInternet(consulta) {
   return fragmentos.slice(0, 5).join('\n- ');
 }
 
-async function llamarChatCompletion(messages) {
-  if (OPENAI_KEY) {
-    try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${OPENAI_KEY}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0'
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages,
-          max_tokens: 130,
-          temperature: 0.85
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'OpenAI GPT-4o-Mini' };
-      } else {
-        console.warn('⚠️ Error en OpenAI Chat:', res.status, await res.text());
-      }
-    } catch (eOai) {
-      console.warn('⚠️ Falló OpenAI, usando Groq:', eOai.message);
-    }
-  }
+async function llamarOpenAI(messages) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+    body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: 130, temperature: 0.85 }),
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!res.ok) throw new Error(`OpenAI ${res.status}`);
+  const data = await res.json();
+  return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'OpenAI' };
+}
 
-  if (!GROQ_KEY) return { text: 'No tengo configurada mi clave de IA carnal.', provider: 'Sistema' };
-
+async function llamarGroq(messages) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${GROQ_KEY}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0'
-    },
-    body: JSON.stringify({
-      model: 'qwen/qwen3.8-27b',
-      messages,
-      max_tokens: 130,
-      temperature: 0.85,
-      frequency_penalty: 0.7,
-      presence_penalty: 0.5
-    })
+    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+    body: JSON.stringify({ model: 'qwen/qwen3.8-27b', messages, max_tokens: 130, temperature: 0.85, frequency_penalty: 0.7, presence_penalty: 0.5 }),
+    signal: AbortSignal.timeout(6000)
   });
-
-  if (!res.ok) {
-    console.warn('⚠️ Error en Groq Chat:', res.status, await res.text());
-    return { text: 'Me trabé tantito con la chela, repíteme eso.', provider: 'Sistema' };
-  }
-
+  if (!res.ok) throw new Error(`Groq ${res.status}`);
   const data = await res.json();
   return { text: data.choices?.[0]?.message?.content?.trim(), provider: 'Groq' };
+}
+
+// GPT primero si hay clave; con IA_PRINCIPAL=groq en Render se invierte para comparar.
+async function llamarChatCompletion(messages) {
+  const proveedores = [];
+  if (OPENAI_KEY) proveedores.push(llamarOpenAI);
+  if (GROQ_KEY) proveedores.push(llamarGroq);
+  if (process.env.IA_PRINCIPAL?.trim().toLowerCase() === 'groq') proveedores.reverse();
+  for (const llamar of proveedores) {
+    try {
+      return await llamar(messages);
+    } catch (e) {
+      console.warn(`⚠️ Falló la IA: ${e.message}`);
+    }
+  }
+  return { text: 'Me trabé tantito con la chela, repíteme eso.', provider: 'Sistema' };
 }
 
 async function buscarYEnviarFoto(consulta) {
@@ -602,21 +591,26 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
     }
   }
 
+  const yaEnConversacion = historial.length >= 4;
   historial.push({ role: 'user', content: `${prefijoBallenon}${nombreUsuario}: ${mensajeUsuario}` });
-  if (historial.length > 8) historial.shift();
+  if (historial.length > 14) historial.shift();
 
   // Atajo instantáneo si piden foto explícitamente por voz
   if (/\b(?:manda|env[ií]a|pasa|pon|sube|busca)\b[\s\S]*\b(?:foto|imagen|im[aá]genes|fotos)\b/i.test(mensajeUsuario)) {
     return await buscarYEnviarFoto(mensajeUsuario);
   }
 
+  const contexto = userId ? await leerContexto(userId) : { hechos: [], recientes: [], frases: [] };
+  const estado = `\n\nESTADO ACTUAL: ${cancionActual ? `está sonando música (${cancionActual.title})` : 'NO hay música sonando'}.`;
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: SYSTEM_PROMPT + estado + bloqueMemoria(contexto, nombreUsuario, yaEnConversacion) },
     ...historial
   ];
 
   try {
+    const t0 = Date.now();
     const { text: raw, provider } = await llamarChatCompletion(messages);
+    const msIA = Date.now() - t0;
     if (!raw || raw.length < 2) {
       return 'No te alcancé a escuchar bien carnal, ¿qué decías?';
     }
@@ -666,7 +660,8 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
 
       logEvent(`🌐 [Respuesta con datos de Google]: "${limpiaWeb}"`);
       historial.push({ role: 'assistant', content: limpiaWeb });
-      if (historial.length > 8) historial.shift();
+      if (historial.length > 14) historial.shift();
+      if (userId) recordar({ usuarioId: userId, nombre: nombreUsuario, dijo: mensajeUsuario, respuesta: limpiaWeb, preguntarIA: llamarChatCompletion });
       return limpiaWeb;
     }
 
@@ -680,9 +675,10 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
       limpia = `Al menos yo no soy un ballenón y yo sí farmeo como hombre wey. ${limpia}`;
     }
 
-    logEvent(`🧠 [${provider}]: "${limpia}"`);
+    logEvent(`🧠 [${provider} ${msIA} ms]: "${limpia}"`);
     historial.push({ role: 'assistant', content: limpia });
-    if (historial.length > 8) historial.shift();
+    if (historial.length > 14) historial.shift();
+    if (userId) recordar({ usuarioId: userId, nombre: nombreUsuario, dijo: mensajeUsuario, respuesta: limpia, preguntarIA: llamarChatCompletion });
     return limpia;
   } catch (err) {
     logEvent(`❌ Error en responderConIA: ${err.message}`);
@@ -972,7 +968,9 @@ async function reproducirVozPepe(texto) {
     }
 
     logEvent(`⏳ [TTS] Sintetizando voz de Jorge: "${texto}"`);
+    const tVoz = Date.now();
     await generarAudioJorge(texto, audioFile);
+    logEvent(`⏱️ [Voz generada: ${Date.now() - tVoz} ms]`);
     const resource = createAudioResource(fs.createReadStream(audioFile), {
       inputType: StreamType.Arbitrary
     });
@@ -1252,6 +1250,34 @@ function kickstartVoice() {
   }
 }
 
+// Enciende o apaga la cámara de Pepe Cine, que vive en la laptop. El link fijo
+// redirige al túnel vigente; un POST no sobrevive a la redirección, así que
+// primero se pregunta adónde apunta.
+async function pedirCamara(accion, canalId) {
+  const clave = process.env.CINE_BOT_CLAVE?.trim();
+  if (!clave) {
+    logEvent('⚠️ [Cámara]: falta CINE_BOT_CLAVE');
+    return { ok: false };
+  }
+  try {
+    const fijo = process.env.CINE_URL?.trim() || 'https://cine.noxzlivewall.com/';
+    const destino = (await fetch(fijo, { redirect: 'manual', signal: AbortSignal.timeout(8000) })).headers.get('location');
+    if (!destino) return { ok: false };
+    const r = await fetch(new URL('/bot/camara', destino), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Cine-Bot': clave },
+      body: JSON.stringify({ accion, canalId }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const d = await r.json().catch(() => ({}));
+    logEvent(`🗿 [Cámara ${accion}]: ${r.status} ${JSON.stringify(d)}`);
+    return d;
+  } catch (e) {
+    logEvent(`❌ [Cámara]: ${e.message}`);
+    return { ok: false };
+  }
+}
+
 function parseComandoVoz(texto) {
   const t = (texto || '').toLowerCase().replace(/[¿?¡!.,;:\"']/g, '').trim();
   const dicePepe = /\bpepe\b/i.test(t);
@@ -1281,14 +1307,24 @@ function parseComandoVoz(texto) {
     return { type: 'VOLUMEN_SET', val: parseInt(mVol[1], 10) };
   }
 
-  if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t) || /\b(?:pepe\s+)?(?:c[aá]llate|apaga\s*la\s*m[uú]sica)\b/i.test(t)) {
+  if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_STOP' };
+  }
+  // «Pepe cállate» es que deje de hablar, no que quite la música
+  if (dicePepe && !/\bno\s+te\s+calles\b/.test(t) && /\b(c[aá]llate|c[aá]llese|c[aá]llense|silencio|deja\s+de\s+hablar|ya\s+no\s+hables|ya\s+estuvo|shh+)\b/.test(t)) {
+    return { type: 'CALLAR' };
   }
   if (/(?:pausa|pa[uú]sale)\s*(?:la)\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_PAUSE' };
   }
   if (/(?:despausa|reanuda)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)?/i.test(t)) {
     return { type: 'MUSICA_RESUME' };
+  }
+
+  // Cámara de Pepe Cine: solo si le hablan a Pepe por su nombre
+  if (dicePepe && /c[aá]mara/i.test(t)) {
+    if (/\b(apaga|apagar|ap[aá]gala|ap[aá]gale|quita|qu[ií]tala|cierra|ci[eé]rrala)\b/i.test(t)) return { type: 'CAMARA_APAGAR' };
+    if (/\b(prende|prender|pr[eé]ndela|pr[eé]ndele|enciende|encender|enci[eé]ndela|activa|act[ií]vala|pon|ponte)\b/i.test(t)) return { type: 'CAMARA_PRENDER' };
   }
 
   // Toda petición de buscar canciones o buscar en Google pasa por el cerebro de IA (GPT-4o-mini)
@@ -1355,7 +1391,9 @@ function configurarEscucha(connection) {
 
       const wavBuffer = createWavBuffer(totalPcm, 48000, 2);
       try {
+        const tOido = Date.now();
         const texto = await transcribirAudio(wavBuffer);
+        logEvent(`⏱️ [Transcripción: ${Date.now() - tOido} ms]`);
         if (!texto || texto.trim().length < 2) {
           logEvent(`🔇 [Whisper] No se detectó texto comprensible.`);
           return;
@@ -1408,7 +1446,18 @@ function configurarEscucha(connection) {
           return;
         }
 
+        // Al que insulta con «cállate» por la regla del ballenón le sigue tocando carrilla
+        if (cmd.type === 'CALLAR' && userId !== '310155296729202689') {
+          voicePlayer.stop(true);
+          silencioHasta = Date.now() + 60000;
+          return;
+        }
+
         if (cmd.type === 'MUSICA_STOP') {
+          if (!cancionActual) {
+            await reproducirVozPepe('No hay música sonando, carnal.');
+            return;
+          }
           detenerMusica();
           await reproducirVozPepe('Ya quité la música compas.');
           return;
@@ -1431,6 +1480,15 @@ function configurarEscucha(connection) {
           return;
         }
 
+        if (cmd.type === 'CAMARA_PRENDER' || cmd.type === 'CAMARA_APAGAR') {
+          const prender = cmd.type === 'CAMARA_PRENDER';
+          const r = await pedirCamara(prender ? 'prender' : 'apagar', conexionActual?.joinConfig?.channelId);
+          if (r.ok) await reproducirVozPepe(prender ? 'Sobres, ahí va la cámara.' : 'Ya apagué la cámara, carnal.');
+          else if (r.error === 'ocupado') await reproducirVozPepe('Ahorita no se puede carnal, están viendo una película.');
+          else await reproducirVozPepe('No pude con la cámara, el cine no me contesta.');
+          return;
+        }
+
         if (cmd.type === 'BUSCAR_MUSICA') {
           const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
           await buscarYDarOpciones(cmd.query, canalTexto);
@@ -1448,7 +1506,8 @@ function configurarEscucha(connection) {
         const insultoABot = esBallenon && detectaInsulto(texto);
 
         // Responder si el modo continuo está activo, si dijeron "pepe", O si el ballenón insulta a Pepe
-        if (modoCharlaContinua || esParaPepe || insultoABot) {
+        const callado = Date.now() < silencioHasta;
+        if ((modoCharlaContinua && !callado) || esParaPepe || insultoABot) {
           logEvent(`🧠 [Pepe respondiendo a ${username}]...`);
           const respuesta = await responderConIA(texto, username, userId);
           if (respuesta) {
