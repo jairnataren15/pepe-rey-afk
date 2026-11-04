@@ -17,6 +17,7 @@ import { Ytdl } from '@distube/ytdl-core';
 import play from 'play-dl';
 import { ytmp3 } from '@vreden/youtube_scraper';
 import { asegurarYtDlp } from './install-ytdlp.js';
+import { quitarPedido, leerSeleccion, leerCancelacion, buscarEnDeezer, decidirCancion, pistaComoCancion, elegirVideo, coincideSoundCloud } from './musica.js';
 import { leerContexto, bloqueMemoria, recordar } from './memoria.js';
 
 if (ffmpegPath) {
@@ -89,6 +90,11 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
   * Si este miembro habla de Aion, hace preguntas o platica de cualquier tema normal, respóndele NORMAL con tu estilo gamer de compas. PROHIBIDO decirle lo del ballenón si NO te está insultando.
   * ÚNICAMENTE si este miembro te INSULTA a ti (Pepe), te dice manco, pendejo, cállate, no sirves o te falta al respeto, ahí SÍ humíllalo diciéndole: "al menos yo no soy un ballenón y yo sí farmeo como hombre".
 
+- REGLA ESPECIAL PARA TUS CONSENTIDAS (te avisan cuando habla una de ellas):
+  * Con ellas eres coqueto y galán en plan juguetón, con tu ego de siempre: "mi reina", "yo sé que te interesa un gladiador", "para ti siempre tengo tiempo entre Elios y Elios". Inventa frases nuevas, no repitas estas.
+  * Con ellas no uses insultos ni carrilla pesada. El coqueteo es de piropo gracioso y presumido: nada sexual, vulgar ni sobre su cuerpo.
+  * Si te piden que le bajes o se ve que no les late, déjalo de inmediato y háblales normal.
+
 PERSONALIDAD Y TONO:
 - Tienes humor negro gamer, sarcasmo fino y carrilla pesada de compas. Te encanta presumir tu Gladiador top 1 de 4600 GS y 350k de CP, tu mandíbula de Epstein GigaChad Dios del Mewing, que te encanta arrancarle la cabeza a los Elios, y burlarte de los fails, de los mancos de Boba, Cat Cafe, Divine Army, QD Panda y AceGG EZ.
 - Les dices mancos, conos con patas, muertos de hambre, manquísimos, mancuernas, que desinstalen el juego o que vendan la PC si la riegan.
@@ -103,6 +109,7 @@ PROHIBIDO usar [BUSCAR_MUSICA] si:
 - Mencionan "Google", "internet", "web", o te hacen una pregunta general.
 Cuando sí sea una orden directa de poner música, responde ÚNICAMENTE:
 [BUSCAR_MUSICA: <nombre_de_la_canción_o_artista>]
+Copia el nombre completo como lo dijeron, con sus artículos ("La Bachata", "Que Lloren") y sin inventar el artista si no lo mencionaron. Solo corrige si es obvio que se entendió mal una palabra.
 
 REGLA DE ENVIAR FOTOS / IMÁGENES AL CHAT GENERAL:
 Si el usuario te pide que busques, pases, mandes o subas una foto o imagen de algo al chat/canal (ej: "Pepe manda una foto de...", "Pepe busca una imagen de... y mándala al chat", "pasa foto de..."):
@@ -124,6 +131,7 @@ REGLAS DE RESPUESTA DE CHARLA:
 6. No repitas los mismos insultos, remates ni estructura de tus frases anteriores. Cada respuesta debe sonar distinta.
 7. No digas que hiciste algo (poner o quitar música, buscar, mandar fotos) si no lo hiciste de verdad. El ESTADO ACTUAL te dice si hay música.`;
 
+const CONSENTIDAS = new Set(['1282435667791446083', '437983758730133504']);
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
 let botHablando = false; // anti-eco
@@ -361,27 +369,6 @@ async function transcribirAudio(wavBuffer) {
 // ───────────────────────────────────────────────────────────────
 // 5. CEREBRO IA (OpenAI GPT-4o-mini o Groq) & FILTRADO INTELIGENTE
 // ───────────────────────────────────────────────────────────────
-function limpiarQueryBusqueda(texto) {
-  let q = (texto || '').toLowerCase()
-    .replace(/[¿?¡!.,;:\"'()[\]]/g, ' ')
-    // Corrección fonética de Whisper para nombres y canciones frecuentes
-    .replace(/\b(?:waifi|wifi|güaifi|guaifi)\b/gi, 'wifey')
-    .replace(/\b(?:aribela|arivela|aria bella|ariveya|aribella)\b/gi, 'aria bela')
-    .replace(/\b(?:pilate|pilats|pirates)\b/gi, 'pilates')
-    // Eliminar muletillas y llamadas al bot
-    .replace(/\b(?:pepe|oye|hey|favor|porfa|por\s*favor|carnal|paro|wey|güey|mano)\b/gi, ' ')
-    // Eliminar verbos de búsqueda o reproducción
-    .replace(/\b(?:pon(?:te|me|nos)?|busca(?:te|me)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avienta(?:te)?|m[eé]tele|canta(?:te)?|c[oó]loca|suena)\b/gi, ' ')
-    // Eliminar sustantivos de música
-    .replace(/\b(?:m[uú]sica|canci[oó]n|canciones|rolas?|temas?|pista|video|audio)\b/gi, ' ')
-    // Eliminar preposiciones y artículos
-    .replace(/\b(?:de|la|el|las|los|un|una|unos|unas|algo|que|esta|este|ese|esa|para|en)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return q;
-}
-
 async function buscarEnInternet(consulta) {
   const q = (consulta || '')
     .replace(/_/g, ' ')
@@ -593,8 +580,10 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
     }
   }
 
+  const prefijoConsentida = CONSENTIDAS.has(userId) ? '[HABLA UNA DE TUS CONSENTIDAS: aplica su regla especial] ' : '';
+
   const yaEnConversacion = historial.length >= 4;
-  historial.push({ role: 'user', content: `${prefijoBallenon}${nombreUsuario}: ${mensajeUsuario}` });
+  historial.push({ role: 'user', content: `${prefijoBallenon}${prefijoConsentida}${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 14) historial.shift();
 
   // Atajo instantáneo si piden foto explícitamente por voz
@@ -628,7 +617,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
     if (raw.includes('[BUSCAR_MUSICA:') || /BUSCAR_MUSICA:\s*/i.test(raw)) {
       const m = raw.match(/(?:\[)?BUSCAR_MUSICA:\s*(.+?)(?:\]|$)/i);
       const cancion = m ? m[1].trim() : raw.replace(/\[?BUSCAR_MUSICA:\s*/i, '').replace(/\]/g, '').trim();
-      const queryLimpia = limpiarQueryBusqueda(cancion);
+      const queryLimpia = quitarPedido(cancion);
 
       // Evitar falsos positivos si la query es "google", "internet", "algo", etc.
       if (!/^(?:google|internet|web|algo|nada|eso|informaci[oó]n)$/i.test(queryLimpia)) {
@@ -879,7 +868,7 @@ async function obtenerUrlYouTubeDirecto(videoUrl) {
 }
 
 // 2. Extractor directo SoundCloud API v2 (0% bloqueo en Render/Datacenter, resuelve en ~1s sin depender de play.stream)
-async function obtenerUrlSoundCloudDirecto(query, duracionObjetivoSeg = 0) {
+async function obtenerUrlSoundCloudDirecto(query, info) {
   const cid = await play.getFreeClientID();
   await play.setToken({ soundcloud: { client_id: cid } });
   const scResults = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 15 });
@@ -900,20 +889,14 @@ async function obtenerUrlSoundCloudDirecto(query, duracionObjetivoSeg = 0) {
     throw new Error('Pistas con DRM en SoundCloud');
   }
 
-  const pideRemix = /remix|slowed|sped|cover|mashup|edit/i.test(query);
-  if (!pideRemix) {
-    candidatos.sort((a, b) => {
-      const aPenal = /remix|slowed|sped|cover|mashup|1920|pvz|humor/i.test(a.track.name) ? 1 : 0;
-      const bPenal = /remix|slowed|sped|cover|mashup|1920|pvz|humor/i.test(b.track.name) ? 1 : 0;
-      if (aPenal !== bPenal) return aPenal - bPenal;
-      if (duracionObjetivoSeg > 0) {
-        return Math.abs((a.track.durationInSec || 0) - duracionObjetivoSeg) - Math.abs((b.track.durationInSec || 0) - duracionObjetivoSeg);
-      }
-      return 0;
-    });
+  const validos = candidatos.filter(({ track }) => coincideSoundCloud(info, track.name, track.user?.name, track.durationInSec));
+  if (validos.length === 0) {
+    throw new Error('Ninguna pista de SoundCloud es esa canción');
   }
+  const objetivo = info.catalogo?.duracion || info.seconds || 0;
+  validos.sort((a, b) => Math.abs((a.track.durationInSec || 0) - objetivo) - Math.abs((b.track.durationInSec || 0) - objetivo));
 
-  for (const { track, fmt } of candidatos) {
+  for (const { track, fmt } of validos) {
     try {
       const apiRes = await fetch(`${fmt.url}?client_id=${cid}`, {
         headers: { 'User-Agent': 'Mozilla/5.0' }
@@ -933,10 +916,32 @@ async function obtenerUrlSoundCloudDirecto(query, duracionObjetivoSeg = 0) {
   throw new Error('No se pudo resolver URL de SoundCloud');
 }
 
+async function buscarVideoDePista(pista) {
+  try {
+    const r = await yts(`${pista.artista} ${pista.titulo}`);
+    const video = elegirVideo(pista, r.videos || []);
+    logEvent(video
+      ? `🎯 [Video verificado]: "${video.title}" [${video.timestamp}] para ${pista.titulo} - ${pista.artista} [${pista.duracion}s]`
+      : `⚠️ [Ningún video coincide]: ${pista.titulo} - ${pista.artista}`);
+    return video;
+  } catch (err) {
+    logEvent(`⚠️ [Búsqueda en YouTube]: ${err.message}`);
+    return null;
+  }
+}
+
 // Resuelve en paralelo YouTube y SoundCloud mientras Pepe anuncia la canción
 async function resolverMejorStreamUrl(videoInfo, tituloLimpio) {
-  const promYt = obtenerUrlYouTubeDirecto(videoInfo.url).catch(err => ({ error: err }));
-  const promSc = obtenerUrlSoundCloudDirecto(tituloLimpio, videoInfo.seconds || 0).catch(err => ({ error: err }));
+  const pista = videoInfo.catalogo;
+  const consultaSc = pista ? `${pista.artista} ${pista.titulo}` : tituloLimpio;
+  const promSc = obtenerUrlSoundCloudDirecto(consultaSc, videoInfo).catch(err => ({ error: err }));
+  if (pista && !videoInfo.url) {
+    const video = await buscarVideoDePista(pista);
+    if (video) videoInfo.url = video.url;
+  }
+  const promYt = videoInfo.url
+    ? obtenerUrlYouTubeDirecto(videoInfo.url).catch(err => ({ error: err }))
+    : Promise.resolve({ error: new Error('sin video que coincida') });
 
   const [resYt, resSc] = await Promise.all([promYt, promSc]);
 
@@ -946,7 +951,7 @@ async function resolverMejorStreamUrl(videoInfo, tituloLimpio) {
   }
 
   if (resYt?.error) {
-    logEvent(`ℹ️ [YouTube bloqueado en nube, usando respaldo inmediato SoundCloud]`);
+    logEvent(`ℹ️ [YouTube no disponible: ${resYt.error.message}]`);
   }
 
   if (resSc && resSc.streamUrl) {
@@ -1012,24 +1017,54 @@ async function reproducirVozPepe(texto) {
 
 const reproducirEnCanal = reproducirVozPepe;
 
-async function buscarYDarOpciones(query, canalTexto = null) {
-  try {
-    logEvent(`🔍 [Buscando en YouTube]: "${query}"`);
-    const r = await yts(query);
-    const videos = (r.videos || []).slice(0, 3);
+async function avisarCancionEnCanal(cancion, canalTexto) {
+  const canal = client.channels.cache.get(CANAL_MUSICA_ID) || canalTexto;
+  if (!canal?.isTextBased()) return;
+  const enlace = cancion.enlace ? `[${cancion.title}](${cancion.enlace})` : cancion.title;
+  await canal.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription(`🎵 Poniendo **${enlace}** \`[${cancion.timestamp}]\``)] })
+    .catch((err) => logEvent(`⚠️ Error avisando en ${CANAL_MUSICA_ID}: ${err.message}`));
+}
 
-    if (videos.length === 0) {
-      await reproducirVozPepe(`No encontré ninguna rola de ${query} en YouTube carnal.`);
+async function buscarYDarOpciones(pedido, canalTexto = null) {
+  try {
+    const query = quitarPedido(pedido) || pedido;
+    let decision = null;
+    try {
+      decision = decidirCancion(query, await buscarEnDeezer(query));
+    } catch (err) {
+      logEvent(`⚠️ [Deezer]: ${err.message}`);
+    }
+
+    if (decision?.directa) {
+      const cancion = pistaComoCancion(decision.directa);
+      logEvent(`🎯 [Sin duda]: "${query}" -> ${cancion.title}`);
+      avisarCancionEnCanal(cancion, canalTexto);
+      await reproducirCancion(cancion);
       return;
     }
 
-    opcionesMusica = videos.map(v => ({
-      title: v.title,
-      url: v.url,
-      timestamp: v.timestamp,
-      seconds: v.seconds || 0,
-      author: v.author?.name || 'YouTube'
-    }));
+    if (decision?.opciones) {
+      opcionesMusica = decision.opciones.map(pistaComoCancion);
+      logEvent(`🤔 [Varias posibles]: "${query}" -> ${opcionesMusica.map((v) => v.title).join(' | ')}`);
+    } else {
+      logEvent(`🔍 [Buscando en YouTube]: "${query}"`);
+      const r = await yts(query);
+      const videos = (r.videos || []).slice(0, 3);
+
+      if (videos.length === 0) {
+        await reproducirVozPepe(`No encontré nada de ${query} carnal.`);
+        return;
+      }
+
+      opcionesMusica = videos.map(v => ({
+        title: v.title,
+        url: v.url,
+        enlace: v.url,
+        timestamp: v.timestamp,
+        seconds: v.seconds || 0,
+        author: v.author?.name || 'YouTube'
+      }));
+    }
     esperandoSeleccion = true;
 
     // Timeout de 60 segundos para responder
@@ -1042,9 +1077,10 @@ async function buscarYDarOpciones(query, canalTexto = null) {
       }
     }, 60000);
 
-    const t1 = limpiarTituloParaVoz(opcionesMusica[0].title);
-    const t2 = opcionesMusica[1] ? limpiarTituloParaVoz(opcionesMusica[1].title) : null;
-    const t3 = opcionesMusica[2] ? limpiarTituloParaVoz(opcionesMusica[2].title) : null;
+    const paraVoz = (titulo) => limpiarTituloParaVoz(titulo).replace(/ - /g, ' de ');
+    const t1 = paraVoz(opcionesMusica[0].title);
+    const t2 = opcionesMusica[1] ? paraVoz(opcionesMusica[1].title) : null;
+    const t3 = opcionesMusica[2] ? paraVoz(opcionesMusica[2].title) : null;
 
     let mensajeVoz = `Encontré estas rolas carnal: la 1 es ${t1}`;
     if (t2) mensajeVoz += `, la 2 es ${t2}`;
@@ -1057,12 +1093,12 @@ async function buscarYDarOpciones(query, canalTexto = null) {
       try {
         const embed = new EmbedBuilder()
           .setColor(0xED4245)
-          .setTitle(`🎵 Resultados de búsqueda: "${query}"`)
+          .setTitle(`🎵 ¿Cuál ponemos? "${query}"`)
           .setDescription(
-            opcionesMusica.map((v, i) => `**${i + 1}.** [${v.title}](${v.url}) \`[${v.timestamp}]\``).join('\n\n') +
+            opcionesMusica.map((v, i) => `**${i + 1}.** [${v.title}](${v.enlace}) \`[${v.timestamp}]\``).join('\n\n') +
             '\n\n🗣️ *Dí por voz **"Pepe, pon la 1"**, **"la 2"**, **"la 3"** o pulsa un botón:*'
           )
-          .setFooter({ text: 'Pepe Rey Del Noxz · YouTube DJ' });
+          .setFooter({ text: 'Pepe Rey Del Noxz · DJ' });
 
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('musica_sel_0').setLabel('1️⃣ Opción 1').setStyle(ButtonStyle.Primary),
@@ -1080,7 +1116,7 @@ async function buscarYDarOpciones(query, canalTexto = null) {
     await reproducirVozPepe(mensajeVoz);
   } catch (err) {
     logEvent(`❌ Error buscando música: ${err.message}`);
-    await reproducirVozPepe('Se me trabó el YouTube compa, repíteme qué rola querías.');
+    await reproducirVozPepe('Se me trabó la búsqueda compa, repíteme qué rola querías.');
   }
 }
 
@@ -1146,6 +1182,7 @@ async function reproducirCancion(videoInfo) {
   if (!videoInfo) return;
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
+  const yaHabiaMusica = cancionActual !== null;
 
   // Limpiar cualquier stream anterior antes de cargar la nueva canción (evita condiciones de carrera)
   cancionActual = null;
@@ -1157,7 +1194,7 @@ async function reproducirCancion(videoInfo) {
   try { musicPlayer.stop(true); } catch {}
 
   // Al poner música: recordar si estaba en ON y poner temporalmente en OFF (solo responder a "Pepe")
-  modoAntesDeMusica = modoCharlaContinua;
+  if (!yaHabiaMusica) modoAntesDeMusica = modoCharlaContinua;
   if (modoCharlaContinua) {
     modoCharlaContinua = false;
     logEvent('🔒 [Música Activa]: Cambiando temporalmente a modo mención (solo responde si dicen Pepe).');
@@ -1199,7 +1236,7 @@ async function reproducirCancion(videoInfo) {
   } catch (err) {
     logEvent(`❌ Error reproduciendo audio: ${err.message}`);
     detenerMusica();
-    await reproducirVozPepe('No se pudo jalar esa rola carnal, intenta con otra opción.');
+    await reproducirVozPepe('No encontré el audio de esa rola carnal, y no te voy a poner otra por ponerla.');
   }
 }
 
@@ -1339,10 +1376,9 @@ function parseComandoVoz(texto) {
 
   // 1. Si estábamos esperando selección de canción (1, 2, 3 o cancelar), permitir respuesta directa
   if (esperandoSeleccion) {
-    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:1|uno|una|primera|primer)\b/i.test(t)) return { type: 'SELECCION', idx: 0 };
-    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:2|dos|segunda|segundo)\b/i.test(t)) return { type: 'SELECCION', idx: 1 };
-    if (/\b(?:opci[oó]n\s*)?(?:la\s+|el\s+)?(?:3|tres|tercera|tercer)\b/i.test(t)) return { type: 'SELECCION', idx: 2 };
-    if (/\b(cancela|cancelar|ninguna|olv[ií]dalo|ya\s*no|no\s*pongas\s*nada)\b/i.test(t)) return { type: 'CANCELAR_SELECCION' };
+    const opcion = leerSeleccion(t);
+    if (opcion >= 0) return { type: 'SELECCION', idx: opcion };
+    if (leerCancelacion(t)) return { type: 'CANCELAR_SELECCION' };
   }
 
   // Si no dijeron "Pepe" y el modo continuo está apagado, no interceptar nada de la charla entre amigos
