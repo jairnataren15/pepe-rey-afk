@@ -56,6 +56,23 @@ export function leerSeleccion(textoMinusculas) {
   return 2;
 }
 
+export function pidenCallar(textoMinusculas) {
+  const t = normalizar(textoMinusculas);
+  if (/\bno te calles\b/.test(t)) return false;
+  return /\b(callate|callese|callense|te calles|silencio|deja de hablar|ya no hables|ya estuvo|shh+)\b/.test(t);
+}
+
+// Lo que Pepe lee del menú: lo justo para distinguir las opciones
+export function tituloParaMenu(cancion) {
+  if (cancion.catalogo) return `${cancion.catalogo.titulo} de ${cancion.catalogo.artista}`;
+  const limpio = (cancion.title || '')
+    .replace(/[([{~][^)\]}~]*[)\]}~]/g, ' ')
+    .replace(/[|#_~\-–—]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return limpio.split(' ').slice(0, 6).join(' ');
+}
+
 export function leerCancelacion(textoMinusculas) {
   const t = normalizar(textoMinusculas);
   const sinPepe = t.replace(/\bpepe\b/g, ' ').replace(/\s+/g, ' ').trim();

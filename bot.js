@@ -17,7 +17,7 @@ import { Ytdl } from '@distube/ytdl-core';
 import play from 'play-dl';
 import { ytmp3 } from '@vreden/youtube_scraper';
 import { asegurarYtDlp } from './install-ytdlp.js';
-import { quitarPedido, leerSeleccion, leerCancelacion, buscarEnDeezer, decidirCancion, pistaComoCancion, elegirVideo, coincideSoundCloud } from './musica.js';
+import { tituloParaMenu, pidenCallar, quitarPedido, leerSeleccion, leerCancelacion, buscarEnDeezer, decidirCancion, pistaComoCancion, elegirVideo, coincideSoundCloud } from './musica.js';
 import { leerContexto, bloqueMemoria, recordar } from './memoria.js';
 
 if (ffmpegPath) {
@@ -1077,15 +1077,14 @@ async function buscarYDarOpciones(pedido, canalTexto = null) {
       }
     }, 60000);
 
-    const paraVoz = (titulo) => limpiarTituloParaVoz(titulo).replace(/ - /g, ' de ');
-    const t1 = paraVoz(opcionesMusica[0].title);
-    const t2 = opcionesMusica[1] ? paraVoz(opcionesMusica[1].title) : null;
-    const t3 = opcionesMusica[2] ? paraVoz(opcionesMusica[2].title) : null;
+    const t1 = tituloParaMenu(opcionesMusica[0]);
+    const t2 = opcionesMusica[1] ? tituloParaMenu(opcionesMusica[1]) : null;
+    const t3 = opcionesMusica[2] ? tituloParaMenu(opcionesMusica[2]) : null;
 
-    let mensajeVoz = `Encontré estas rolas carnal: la 1 es ${t1}`;
-    if (t2) mensajeVoz += `, la 2 es ${t2}`;
-    if (t3) mensajeVoz += `, y la 3 es ${t3}`;
-    mensajeVoz += '. ¿Cuál ponemos? Dime la 1, la 2 o la 3.';
+    let mensajeVoz = `La 1, ${t1}`;
+    if (t2) mensajeVoz += `. La 2, ${t2}`;
+    if (t3) mensajeVoz += `. La 3, ${t3}`;
+    mensajeVoz += '. ¿Cuál?';
 
     // Enviar tarjeta interactiva siempre al canal de música designado (1310712749709459516)
     const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || canalTexto;
@@ -1183,6 +1182,7 @@ async function reproducirCancion(videoInfo) {
   esperandoSeleccion = false;
   if (timeoutSeleccion) clearTimeout(timeoutSeleccion);
   const yaHabiaMusica = cancionActual !== null;
+  if (botHablando) voicePlayer.stop(true);
 
   // Limpiar cualquier stream anterior antes de cargar la nueva canción (evita condiciones de carrera)
   cancionActual = null;
@@ -1381,6 +1381,11 @@ function parseComandoVoz(texto) {
     if (leerCancelacion(t)) return { type: 'CANCELAR_SELECCION' };
   }
 
+  // «Pepe cállate» es que deje de hablar, no que quite la música
+  if ((dicePepe || botHablando) && pidenCallar(t)) {
+    return { type: 'CALLAR' };
+  }
+
   // Si no dijeron "Pepe" y el modo continuo está apagado, no interceptar nada de la charla entre amigos
   if (!dicePepe && !modoCharlaContinua) {
     return { type: 'CHARLA' };
@@ -1400,10 +1405,6 @@ function parseComandoVoz(texto) {
 
   if (/(?:para|det[eé]n|quita|apaga|stop)\s*(?:la)?\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_STOP' };
-  }
-  // «Pepe cállate» es que deje de hablar, no que quite la música
-  if (dicePepe && !/\bno\s+te\s+calles\b/.test(t) && /\b(c[aá]llate|c[aá]llese|c[aá]llense|silencio|deja\s+de\s+hablar|ya\s+no\s+hables|ya\s+estuvo|shh+)\b/.test(t)) {
-    return { type: 'CALLAR' };
   }
   if (/(?:pausa|pa[uú]sale)\s*(?:la)\s*(?:m[uú]sica|canci[oó]n|rola)/i.test(t)) {
     return { type: 'MUSICA_PAUSE' };
@@ -1523,6 +1524,7 @@ function configurarEscucha(connection) {
         if (cmd.type === 'CANCELAR_SELECCION') {
           esperandoSeleccion = false;
           opcionesMusica = [];
+          if (botHablando) voicePlayer.stop(true);
           await reproducirVozPepe('Sobres compa, búsqueda cancelada.');
           return;
         }
