@@ -90,7 +90,7 @@ TU HISTORIA, APARIENCIA Y STATS EN AION 2 (LORE OFICIAL):
   * Si este miembro habla de Aion, hace preguntas o platica de cualquier tema normal, respóndele NORMAL con tu estilo gamer de compas. PROHIBIDO decirle lo del ballenón si NO te está insultando.
   * ÚNICAMENTE si este miembro te INSULTA a ti (Pepe), te dice manco, pendejo, cállate, no sirves o te falta al respeto, ahí SÍ humíllalo diciéndole: "al menos yo no soy un ballenón y yo sí farmeo como hombre".
 
-- REGLA ESPECIAL PARA TUS CONSENTIDAS (te avisan cuando habla una de ellas):
+- REGLA ESPECIAL PARA TUS CONSENTIDAS (QUIEN TE HABLA AHORA te dice si es una de ellas; con nadie más coqueteas):
   * Con ellas eres coqueto y galán en plan juguetón, con tu ego de siempre: "mi reina", "yo sé que te interesa un gladiador", "para ti siempre tengo tiempo entre Elios y Elios". Inventa frases nuevas, no repitas estas.
   * Con ellas no uses insultos ni carrilla pesada. El coqueteo es de piropo gracioso y presumido: nada sexual, vulgar ni sobre su cuerpo.
   * Si te piden que le bajes o se ve que no les late, déjalo de inmediato y háblales normal.
@@ -132,6 +132,15 @@ REGLAS DE RESPUESTA DE CHARLA:
 7. No digas que hiciste algo (poner o quitar música, buscar, mandar fotos) si no lo hiciste de verdad. El ESTADO ACTUAL te dice si hay música.`;
 
 const CONSENTIDAS = new Set(['1282435667791446083', '437983758730133504']);
+const CREADOR_ID = '522914038410117132';
+
+// El historial es de todo el canal: sin esto, lo que le dijo a una lo repite con el siguiente
+function quienHabla(userId, nombre) {
+  if (CONSENTIDAS.has(userId)) return `QUIEN TE HABLA AHORA: ${nombre}, una de tus consentidas. Aplica su regla especial.`;
+  const sinCoqueteo = `Háblale como a un compa: nada de "mi reina" ni coqueteo, aunque en mensajes anteriores se lo hayas dicho a otra persona. Si te lo reclama, aclárale con carrilla que eso no era para él.`;
+  if (userId === CREADOR_ID) return `QUIEN TE HABLA AHORA: ${nombre}, que es Jair, tu creador. Lo sabes y le tienes ley, pero le sigues echando carrilla de compa; no le hagas la barba en cada frase. ${sinCoqueteo}`;
+  return `QUIEN TE HABLA AHORA: ${nombre}. No es de tus consentidas. ${sinCoqueteo}`;
+}
 const historial = []; // últimos mensajes en memoria
 let modoCharlaContinua = false; // Modo OFF por defecto (solo responde si dicen 'pepe' o comandos para no molestar)
 let botHablando = false; // anti-eco
@@ -580,10 +589,8 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
     }
   }
 
-  const prefijoConsentida = CONSENTIDAS.has(userId) ? '[HABLA UNA DE TUS CONSENTIDAS: aplica su regla especial] ' : '';
-
   const yaEnConversacion = historial.length >= 4;
-  historial.push({ role: 'user', content: `${prefijoBallenon}${prefijoConsentida}${nombreUsuario}: ${mensajeUsuario}` });
+  historial.push({ role: 'user', content: `${prefijoBallenon}${nombreUsuario}: ${mensajeUsuario}` });
   if (historial.length > 14) historial.shift();
 
   // Atajo instantáneo si piden foto explícitamente por voz
@@ -592,7 +599,7 @@ async function responderConIA(mensajeUsuario, nombreUsuario = 'Compa', userId = 
   }
 
   const contexto = userId ? await leerContexto(userId) : { hechos: [], recientes: [], frases: [] };
-  const estado = `\n\nESTADO ACTUAL: ${cancionActual ? `está sonando música (${cancionActual.title})` : 'NO hay música sonando'}. Tu cámara está ${camaraPrendida ? 'PRENDIDA' : 'apagada'}.`;
+  const estado = `\n\nESTADO ACTUAL: ${cancionActual ? `está sonando música (${cancionActual.title})` : 'NO hay música sonando'}. Tu cámara está ${camaraPrendida ? 'PRENDIDA' : 'apagada'}.\n${quienHabla(userId, nombreUsuario)}`;
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT + estado + bloqueMemoria(contexto, nombreUsuario, yaEnConversacion) },
     ...historial
