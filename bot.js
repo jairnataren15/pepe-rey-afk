@@ -1356,29 +1356,55 @@ NO repitas estas que ya dijiste:
 // Enciende o apaga la cámara de Pepe Cine, que vive en la laptop. El link fijo
 // redirige al túnel vigente; un POST no sobrevive a la redirección, así que
 // primero se pregunta adónde apunta.
-async function pedirCamara(accion, canalId) {
+async function pedirCine(ruta, cuerpo, etiqueta) {
   const clave = process.env.CINE_BOT_CLAVE?.trim();
   if (!clave) {
-    logEvent('⚠️ [Cámara]: falta CINE_BOT_CLAVE');
+    logEvent(`⚠️ [${etiqueta}]: falta CINE_BOT_CLAVE`);
     return { ok: false };
   }
   try {
     const fijo = process.env.CINE_URL?.trim() || 'https://cine.noxzlivewall.com/';
     const destino = (await fetch(fijo, { redirect: 'manual', signal: AbortSignal.timeout(8000) })).headers.get('location');
     if (!destino) return { ok: false };
-    const r = await fetch(new URL('/bot/camara', destino), {
+    const r = await fetch(new URL(ruta, destino), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cine-Bot': clave },
-      body: JSON.stringify({ accion, canalId }),
+      body: JSON.stringify(cuerpo),
       signal: AbortSignal.timeout(30000),
     });
     const d = await r.json().catch(() => ({}));
-    if (accion !== 'estado') logEvent(`🗿 [Cámara ${accion}]: ${r.status} ${JSON.stringify(d)}`);
+    if (cuerpo.accion !== 'estado') logEvent(`🗿 [${etiqueta}]: ${r.status} ${JSON.stringify(d)}`);
     return d;
   } catch (e) {
-    logEvent(`❌ [Cámara]: ${e.message}`);
+    logEvent(`❌ [${etiqueta}]: ${e.message}`);
     return { ok: false };
   }
+}
+const pedirCamara = (accion, canalId) => pedirCine('/bot/camara', { accion, canalId }, `Cámara ${accion}`);
+const pedirSitio = (sitio, canalId) => pedirCine('/bot/abrir', { sitio, canalId }, `Abrir ${sitio}`);
+
+// Lo que se dice por voz → el nombre del atajo en el panel. Whisper escribe algunos de oído.
+const SITIOS_VOZ = [
+  ['Crunchyroll', /cr[ou]nch?[iy] ?rol+/],
+  ['Netflix', /net ?fli[xs]/],
+  ['YouTube', /you ?tube|yu ?tu[bv]e?/],
+  ['HBO Max', /hbo(?: max)?/],
+  ['Prime Video', /(?:amazon )?(?:prime|praim)(?: video)?/],
+  ['Disney+', /disn[e]?[yi]\+?(?: plus)?/],
+  ['Twitch', /twi?t?ch|tuich/],
+  ['AnimeAV1', /anime ?av ?(?:1|uno)/],
+  ['AnimeFLV', /anime ?flv/],
+  ['TioAnime', /tio ?anime/],
+  ['JKAnime', /(?:jk|jota ?ka) ?anime/],
+];
+// Solo si la frase acaba en el sitio: «pon en youtube bad bunny» sigue siendo música.
+function sitioPedido(t) {
+  const limpio = t.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\bpepe\b/g, ' ').replace(/\s+/g, ' ').trim();
+  for (const [nombre, forma] of SITIOS_VOZ) {
+    const frase = new RegExp(`(?<!\\bno )\\b(?:abre|abrir|abreme|abrenos|abrelo|entra|entrale|metete|pon|ponme|ponnos|ponte)(?: (?:a|al|en|el|la|lo|los|de|ahi))* (?:${forma.source})(?: (?:por favor|porfa|wey|carnal|ahi|ya|ahora))*$`);
+    if (frase.test(limpio)) return nombre;
+  }
+  return null;
 }
 
 // Mantener al día si la cámara está prendida
@@ -1437,6 +1463,11 @@ function parseComandoVoz(texto) {
   if (dicePepe && /c[aá]mara/i.test(t)) {
     if (pideApagar) return { type: 'CAMARA_APAGAR' };
     if (/\b(prende|prender|pr[eé]ndela|pr[eé]ndele|enciende|encender|enci[eé]ndela|activa|act[ií]vala|pon|ponte)\b/i.test(t)) return { type: 'CAMARA_PRENDER' };
+  }
+
+  if (dicePepe) {
+    const sitio = sitioPedido(t);
+    if (sitio) return { type: 'ABRIR_SITIO', sitio };
   }
 
   // Toda petición de buscar canciones o buscar en Google pasa por el cerebro de IA (GPT-4o-mini)
@@ -1610,6 +1641,19 @@ function configurarEscucha(connection) {
             if (historial.length > 14) historial.shift();
           } else if (r.error === 'ocupado') await reproducirVozPepe('Ahorita no se puede carnal, están viendo una película.');
           else await reproducirVozPepe('No pude con la cámara, el cine no me contesta.');
+          return;
+        }
+
+        if (cmd.type === 'ABRIR_SITIO') {
+          const r = await pedirSitio(cmd.sitio, conexionActual?.joinConfig?.channelId);
+          if (r.ok) {
+            camaraPrendida = false;
+            const frase = `Ahí les va ${cmd.sitio}, carnal.`;
+            await reproducirVozPepe(frase);
+            historial.push({ role: 'assistant', content: frase });
+            if (historial.length > 14) historial.shift();
+          } else if (r.error === 'ocupado') await reproducirVozPepe('Ahorita no se puede carnal, están viendo una película.');
+          else await reproducirVozPepe(`No pude abrir ${cmd.sitio}, el cine no me contesta.`);
           return;
         }
 
