@@ -1397,12 +1397,16 @@ const SITIOS_VOZ = [
   ['TioAnime', /tio ?anime/],
   ['JKAnime', /(?:jk|jota ?ka) ?anime/],
 ];
-// Solo si la frase acaba en el sitio: «pon en youtube bad bunny» sigue siendo música.
+// «Abre netflix pues» basta con nombrar el sitio. «Pon» debe acabar en él o en una
+// muletilla: «pon en youtube bad bunny» sigue siendo música.
 function sitioPedido(t) {
   const limpio = t.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\bpepe\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const relleno = '(?: (?:a|al|en|el|la|lo|los|de|ahi))*';
+  const final = '(?: (?:por favor|porfa|pues|poes|pos|pue|wey|guey|we|vato|carnal|compa|bro|ahi|ya|ahora|ahorita))*$';
   for (const [nombre, forma] of SITIOS_VOZ) {
-    const frase = new RegExp(`(?<!\\bno )\\b(?:abre|abrir|abreme|abrenos|abrelo|entra|entrale|metete|pon|ponme|ponnos|ponte)(?: (?:a|al|en|el|la|lo|los|de|ahi))* (?:${forma.source})(?: (?:por favor|porfa|wey|carnal|ahi|ya|ahora))*$`);
-    if (frase.test(limpio)) return nombre;
+    const abrir = new RegExp(`(?<!\\bno )\\b(?:abre|abrir|abreme|abrenos|abrelo|abrete|entra|entrale|metete)${relleno} (?:${forma.source})\\b`);
+    const poner = new RegExp(`(?<!\\bno )\\b(?:pon|ponme|ponnos|ponte)${relleno} (?:${forma.source})${final}`);
+    if (abrir.test(limpio) || poner.test(limpio)) return nombre;
   }
   return null;
 }
