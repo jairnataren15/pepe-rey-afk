@@ -1386,7 +1386,7 @@ const pedirSitio = (sitio, canalId) => pedirCine('/bot/abrir', { sitio, canalId 
 // Lo que se dice por voz → el nombre del atajo en el panel. Whisper escribe algunos de oído.
 const SITIOS_VOZ = [
   ['Crunchyroll', /cr[ou]nch?[iy] ?rol+/],
-  ['Netflix', /net ?fli[xs]/],
+  ['Netflix', /ne[tx]? ?fli[xsck]+/],
   ['YouTube', /you ?tube|yu ?tu[bv]e?/],
   ['HBO Max', /hbo(?: max)?/],
   ['Prime Video', /(?:amazon )?(?:prime|praim)(?: video)?/],
@@ -1397,16 +1397,19 @@ const SITIOS_VOZ = [
   ['TioAnime', /tio ?anime/],
   ['JKAnime', /(?:jk|jota ?ka) ?anime/],
 ];
-// «Abre netflix pues» basta con nombrar el sitio. «Pon» debe acabar en él o en una
-// muletilla: «pon en youtube bad bunny» sigue siendo música.
+// Vale cualquier frase que nombre el sitio y pida abrirlo, ponerlo o verlo, en cualquier orden.
+// Se queda fuera lo negado («no abras netflix») y la música. En YouTube, «pon» tiene que
+// acabar en el sitio: «pon bad bunny en youtube» y «pon en youtube bad bunny» son música.
+const NEGADO = '(?<!\\bno(?: \\w+){0,2} )';
+const PIDE_SITIO = new RegExp(`${NEGADO}\\b(?:abr(?:e|es|a|as|an|ir|eme|enos|elo|ela|ete|anme|anos|amos)|entra|entrale|entremos|entrar|metete|mete|metanle|meterle|pon|ponme|ponnos|ponle|ponte|poner|ponga|pongan|pongamos|prende|prendele|enciende|veamos|quiero|queremos|(?:vamos a|hay que) ver)\\b`);
+const PON_YOUTUBE = new RegExp(`${NEGADO}\\b(?:pon|ponme|ponnos|ponle|ponte|poner|ponga|pongan|pongamos)(?: (?:a|al|en|el|la|lo|los|de|ahi))* (?:you ?tube|yu ?tu[bv]e?)(?: (?:por favor|porfa|pues|poes|pos|pue|wey|guey|we|vato|carnal|compa|bro|ahi|ya|ahora|ahorita))*$`);
 function sitioPedido(t) {
   const limpio = t.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\bpepe\b/g, ' ').replace(/\s+/g, ' ').trim();
-  const relleno = '(?: (?:a|al|en|el|la|lo|los|de|ahi))*';
-  const final = '(?: (?:por favor|porfa|pues|poes|pos|pue|wey|guey|we|vato|carnal|compa|bro|ahi|ya|ahora|ahorita))*$';
+  if (/\b(?:rola|rolas|cancion|canciones|musica)\b/.test(limpio) || !PIDE_SITIO.test(limpio)) return null;
   for (const [nombre, forma] of SITIOS_VOZ) {
-    const abrir = new RegExp(`(?<!\\bno )\\b(?:abre|abrir|abreme|abrenos|abrelo|abrete|entra|entrale|metete)${relleno} (?:${forma.source})\\b`);
-    const poner = new RegExp(`(?<!\\bno )\\b(?:pon|ponme|ponnos|ponte)${relleno} (?:${forma.source})${final}`);
-    if (abrir.test(limpio) || poner.test(limpio)) return nombre;
+    if (!new RegExp(`\\b(?:${forma.source})\\b`).test(limpio)) continue;
+    if (nombre === 'YouTube' && /\bpon/.test(limpio) && !/\babr|\bentr|\bmet/.test(limpio) && !PON_YOUTUBE.test(limpio)) return null;
+    return nombre;
   }
   return null;
 }
