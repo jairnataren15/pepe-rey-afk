@@ -38,7 +38,8 @@ export function quitarPedido(texto) {
     .replace(/\s+/g, ' ')
     .trim();
   const inicio = /^(?:pepe|oye|hey|porfa|por favor|carnal|wey|güey|compa|pon(?:te|me|nos|le)?|busca(?:te|me)?|reproduce|toca(?:te)?|su[eé]lta(?:te)?|avi[eé]nta(?:te)?|m[eé]tele|c[aá]nta(?:te)?|c[oó]loca|suena|(?:una|la|el|esa|esta|un|unas)?\s*(?:canci[oó]n|canciones|rolas?|temas?|m[uú]sica|pista|video|audio)(?:\s+(?:que se llama|llamada|de))?|(?:la|el|una|unas|algo|esa)\s+de|que se llama|de)\s+/;
-  const fin = /\s+(?:porfa|por favor|carnal|wey|güey|compa|pepe|(?:en|de) (?:youtube|spotify|deezer|soundcloud))$/;
+  // Muletillas al final («…de Aria Bela, mijo»): sin quitarlas, Deezer no la reconoce
+  const fin = /\s+(?:porfa|plis|please|por favor|carnal|wey|güey|we|compa|compadre|pepe|mijo|mija|mi rey|bro|hermano|vato|pues|ya|ahorita|(?:en|de) (?:youtube|spotify|deezer|soundcloud))$/;
   for (let antes = ''; antes !== q;) {
     antes = q;
     q = q.replace(inicio, '').replace(fin, '').trim();
