@@ -934,18 +934,33 @@ async function obtenerUrlSoundCloudDirecto(query, info) {
   throw new Error('No se pudo resolver URL de SoundCloud');
 }
 
+// yt-search a veces devuelve la página sin ningún resultado según cómo se
+// escriba la búsqueda (8-nov-2026: «ARIA BELA WIFEY» → 0, «wifey aria bela» →
+// 17, con la canción). Se prueban varias formas hasta que una dé el video.
 async function buscarVideoDePista(pista) {
-  try {
-    const r = await yts(`${pista.artista} ${pista.titulo}`);
-    const video = elegirVideo(pista, r.videos || []);
-    logEvent(video
-      ? `🎯 [Video verificado]: "${video.title}" [${video.timestamp}] para ${pista.titulo} - ${pista.artista} [${pista.duracion}s]`
-      : `⚠️ [Ningún video coincide]: ${pista.titulo} - ${pista.artista}`);
-    return video;
-  } catch (err) {
-    logEvent(`⚠️ [Búsqueda en YouTube]: ${err.message}`);
-    return null;
+  const consultas = [...new Set([
+    `${pista.artista} ${pista.titulo}`,
+    `${pista.titulo} ${pista.artista}`,
+    `${pista.titulo} ${pista.artista} audio`,
+    `${pista.artista} - ${pista.titulo} official`,
+  ].map((q) => q.toLowerCase().trim()))];
+  let vistos = 0;
+  for (const q of consultas) {
+    try {
+      const r = await yts(q);
+      const videos = r.videos || [];
+      vistos += videos.length;
+      const video = elegirVideo(pista, videos);
+      if (video) {
+        logEvent(`🎯 [Video verificado]: "${video.title}" [${video.timestamp}] para ${pista.titulo} - ${pista.artista} [${pista.duracion}s] (búsqueda "${q}")`);
+        return video;
+      }
+    } catch (err) {
+      logEvent(`⚠️ [Búsqueda en YouTube "${q}"]: ${err.message}`);
+    }
   }
+  logEvent(`⚠️ [Ningún video coincide]: ${pista.titulo} - ${pista.artista} (${consultas.length} búsquedas, ${vistos} videos vistos)`);
+  return null;
 }
 
 // Resuelve en paralelo YouTube y SoundCloud mientras Pepe anuncia la canción
@@ -1066,7 +1081,9 @@ async function buscarYDarOpciones(pedido, canalTexto = null) {
       logEvent(`🤔 [Varias posibles]: "${query}" -> ${opcionesMusica.map((v) => v.title).join(' | ')}`);
     } else {
       logEvent(`🔍 [Buscando en YouTube]: "${query}"`);
-      const r = await yts(query);
+      // Mismo fallo de yt-search: si sale vacío, otra vez con las palabras al revés.
+      let r = await yts(query);
+      if (!(r.videos || []).length && query.includes(' ')) r = await yts(query.split(' ').reverse().join(' '));
       const videos = (r.videos || []).slice(0, 3);
 
       if (videos.length === 0) {
