@@ -867,34 +867,46 @@ async function obtenerUrlYouTubeDirecto(videoUrl) {
     logEvent(`⚠️ [YouTube API]: ${err.message}`);
   }
 
+  // yt-dlp, probando modos hasta que uno dé audio (9-nov-2026): con cookies,
+  // YouTube cambia al cliente web, que necesita resolver su JavaScript (Node,
+  // que Render ya tiene, con --js-runtimes) y no siempre da formatos de audio;
+  // sin cookies, visionos/android funcionan mientras la IP no esté marcada.
+  const cookies = path.resolve(process.cwd(), 'cookies.txt');
+  const hayCookies = fs.existsSync(cookies);
+  const intentos = [
+    { nombre: 'visionos/android', args: ['--extractor-args', 'youtube:player_client=visionos,android', ...(hayCookies ? ['--cookies', cookies] : [])] },
+    ...(hayCookies ? [
+      { nombre: 'web con cookies', args: ['--cookies', cookies, '--js-runtimes', 'node'] },
+      { nombre: 'tv con cookies', args: ['--cookies', cookies, '--js-runtimes', 'node', '--extractor-args', 'youtube:player_client=tv'] },
+    ] : []),
+    ...(hayCookies ? [{ nombre: 'visionos/android sin cookies', args: ['--extractor-args', 'youtube:player_client=visionos,android'] }] : []),
+  ];
+  const errores = [];
+  for (const intento of intentos) {
+    try {
+      const url = await ytDlpUrl(videoUrl, intento.args);
+      return { streamUrl: url, sourceName: `YouTube (${intento.nombre})` };
+    } catch (err) {
+      errores.push(`${intento.nombre}: ${err.message}`);
+    }
+  }
+  throw new Error(errores.join(' | ').slice(-400));
+}
+
+function ytDlpUrl(videoUrl, extra) {
   return new Promise((resolve, reject) => {
-    const bin = getExecutableYtDlp();
     const isWindows = process.platform === 'win32';
-
-    const cookiesYtDlp = path.resolve(process.cwd(), 'cookies.txt');
-    const baseArgs = [
-      '-g',
-      '-f', 'bestaudio[abr<=96]/bestaudio/best',
-      '--no-playlist',
-      '--no-warnings',
-      '--extractor-args', 'youtube:player_client=visionos,android',
-      // Las cookies ya se escribían (YOUTUBE_COOKIES_BASE64) pero no se pasaban.
-      ...(fs.existsSync(cookiesYtDlp) ? ['--cookies', cookiesYtDlp] : []),
-      videoUrl
-    ];
-
-    const cmd = isWindows ? 'py' : bin;
+    const baseArgs = ['-g', '-f', 'bestaudio[abr<=96]/bestaudio/best', '--no-playlist', '--no-warnings', ...extra, videoUrl];
+    const cmd = isWindows ? 'py' : getExecutableYtDlp();
     const args = isWindows ? ['-3.14', '-m', 'yt_dlp', ...baseArgs] : baseArgs;
-
     execFile(cmd, args, { timeout: 25000 }, (err, stdout, stderr) => {
       if (!err && stdout && stdout.trim().startsWith('http')) {
-        const directUrl = stdout.trim().split('\n')[0].trim();
-        return resolve({ streamUrl: directUrl, sourceName: 'YouTube Direct' });
+        return resolve(stdout.trim().split('\n')[0].trim());
       }
       // Sin stderr, el mensaje de Node solo repite el comando: decir por qué paró.
-      const porque = err?.killed ? 'yt-dlp tardó más de 25 s'
-        : ((stderr || '').trim().split('\n').filter(Boolean).pop() || err?.message || 'Fallo en yt-dlp');
-      reject(new Error(porque.slice(-220)));
+      const porque = err?.killed ? 'tardó más de 25 s'
+        : ((stderr || '').trim().split('\n').filter(Boolean).pop() || err?.message || 'falló');
+      reject(new Error(porque.replace(/^ERROR:\s*/, '').slice(-160)));
     });
   });
 }
@@ -1153,8 +1165,20 @@ async function ponerEnlace(enlace, canalTexto) {
     await reproducirCancion(canciones[0]);
     return;
   }
-  const v = await yts({ videoId: enlace.video });
-  const cancion = cancionDeVideo(v);
+  // yt-search falla con algunos links (9-nov-2026: «undefined»): el título sale
+  // de oEmbed, que YouTube no bloquea; la duración, de yt-search si responde.
+  const url = `https://www.youtube.com/watch?v=${enlace.video}`;
+  let cancion = null;
+  try {
+    const v = await yts({ videoId: enlace.video });
+    if (v && v.title) cancion = cancionDeVideo({ ...v, videoId: enlace.video });
+  } catch {}
+  if (!cancion) {
+    const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error(`YouTube no conoce ese video (${r.status})`);
+    const o = await r.json();
+    cancion = { title: o.title, url, enlace: url, timestamp: '?:??', seconds: 0, author: o.author_name || 'YouTube' };
+  }
   logEvent(`🔗 [Link directo]: "${cancion.title}" [${cancion.timestamp}]`);
   colaMusica = [];
   avisarCancionEnCanal(cancion, canalTexto);
@@ -1167,7 +1191,7 @@ async function buscarYDarOpciones(pedido, canalTexto = null) {
     try {
       await ponerEnlace(enlace, canalTexto);
     } catch (err) {
-      logEvent(`❌ [Link de YouTube]: ${err.message}`);
+      logEvent(`❌ [Link de YouTube]: ${err?.message || err}`);
       await reproducirVozPepe('Ese link no lo pude abrir, carnal.');
     }
     return;
