@@ -740,6 +740,7 @@ let esperandoSeleccion = false;
 let timeoutSeleccion = null;
 let modoAntesDeMusica = false; // Solo restaurar si estaba en ON antes de poner música
 let procesoFfmpegMusica = null; // Stream FFmpeg con auto-reconnect
+let colaMusica = []; // Lo que falta de una playlist: suena al acabar la actual
 
 // Reproductor exclusivo para la voz de Pepe
 const voicePlayer = createAudioPlayer({
@@ -776,6 +777,13 @@ musicPlayer.on(AudioPlayerStatus.Idle, () => {
   if (procesoFfmpegMusica) {
     try { procesoFfmpegMusica.destroy(); } catch {}
     procesoFfmpegMusica = null;
+  }
+
+  if (colaMusica.length) {
+    const siguiente = colaMusica.shift();
+    logEvent(`⏭️ [Cola]: sigue "${siguiente.title}" (${colaMusica.length} más)`);
+    reproducirCancion(siguiente);
+    return;
   }
 
   if (modoAntesDeMusica) {
@@ -863,24 +871,30 @@ async function obtenerUrlYouTubeDirecto(videoUrl) {
     const bin = getExecutableYtDlp();
     const isWindows = process.platform === 'win32';
 
+    const cookiesYtDlp = path.resolve(process.cwd(), 'cookies.txt');
     const baseArgs = [
       '-g',
       '-f', 'bestaudio[abr<=96]/bestaudio/best',
       '--no-playlist',
       '--no-warnings',
       '--extractor-args', 'youtube:player_client=visionos,android',
+      // Las cookies ya se escribían (YOUTUBE_COOKIES_BASE64) pero no se pasaban.
+      ...(fs.existsSync(cookiesYtDlp) ? ['--cookies', cookiesYtDlp] : []),
       videoUrl
     ];
 
     const cmd = isWindows ? 'py' : bin;
     const args = isWindows ? ['-3.14', '-m', 'yt_dlp', ...baseArgs] : baseArgs;
 
-    execFile(cmd, args, { timeout: 8000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout: 25000 }, (err, stdout, stderr) => {
       if (!err && stdout && stdout.trim().startsWith('http')) {
         const directUrl = stdout.trim().split('\n')[0].trim();
         return resolve({ streamUrl: directUrl, sourceName: 'YouTube Direct' });
       }
-      reject(new Error((stderr || err?.message || 'Fallo en yt-dlp').slice(-180).trim()));
+      // Sin stderr, el mensaje de Node solo repite el comando: decir por qué paró.
+      const porque = err?.killed ? 'yt-dlp tardó más de 25 s'
+        : ((stderr || '').trim().split('\n').filter(Boolean).pop() || err?.message || 'Fallo en yt-dlp');
+      reject(new Error(porque.slice(-220)));
     });
   });
 }
@@ -1058,7 +1072,106 @@ async function avisarCancionEnCanal(cancion, canalTexto) {
     .catch((err) => logEvent(`⚠️ Error avisando en ${CANAL_MUSICA_ID}: ${err.message}`));
 }
 
+// Un link de YouTube: { video, lista } (uno de los dos o ambos), o null.
+function leerEnlaceYouTube(texto) {
+  const m = (texto || '').match(/https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)\/\S+/i);
+  if (!m) return null;
+  try {
+    const u = new URL(m[0]);
+    const lista = u.searchParams.get('list');
+    let video = u.searchParams.get('v');
+    if (u.hostname.endsWith('youtu.be')) video = u.pathname.slice(1).split('/')[0];
+    const corto = u.pathname.match(/^\/(?:shorts|live|embed)\/([\w-]{6,})/);
+    if (corto) video = corto[1];
+    // Las «mix» automáticas (RD…) no son una lista que se pueda leer: solo el video.
+    const listaValida = lista && !/^RD/.test(lista) ? lista : null;
+    if (!video && !listaValida) return null;
+    return { video, lista: listaValida };
+  } catch {
+    return null;
+  }
+}
+
+const cancionDeVideo = (v) => ({
+  title: v.title,
+  url: v.url || `https://youtube.com/watch?v=${v.videoId}`,
+  enlace: v.url || `https://youtube.com/watch?v=${v.videoId}`,
+  timestamp: v.timestamp || v.duration?.timestamp || '?:??',
+  seconds: v.seconds || v.duration?.seconds || 0,
+  author: v.author?.name || 'YouTube',
+});
+
+// Pone un link directo: un video suena ya; una playlist suena entera, en orden.
+// Las canciones de una playlist. yt-search y play-dl ya no leen las listas
+// (8-nov-2026, las dos fallan): yt-dlp sí, sin bajar nada (--flat-playlist).
+function leerPlaylist(listaId) {
+  return new Promise((resolve, reject) => {
+    const isWindows = process.platform === 'win32';
+    const baseArgs = ['--flat-playlist', '-J', '--no-warnings', `https://www.youtube.com/playlist?list=${listaId}`];
+    const cmd = isWindows ? 'py' : getExecutableYtDlp();
+    const args = isWindows ? ['-3.14', '-m', 'yt_dlp', ...baseArgs] : baseArgs;
+    execFile(cmd, args, { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(((stderr || '').trim().split(String.fromCharCode(10)).pop() || err.message).slice(-200)));
+      try {
+        const d = JSON.parse(stdout);
+        const videos = (d.entries || []).filter((e) => e?.id).map((e) => ({
+          title: e.title,
+          videoId: e.id,
+          url: `https://youtube.com/watch?v=${e.id}`,
+          seconds: e.duration || 0,
+          timestamp: e.duration ? `${Math.floor(e.duration / 60)}:${String(Math.round(e.duration % 60)).padStart(2, '0')}` : '?:??',
+          author: { name: e.channel || e.uploader || 'YouTube' },
+        }));
+        resolve({ title: d.title, videos });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
+async function ponerEnlace(enlace, canalTexto) {
+  if (enlace.lista) {
+    const lista = await leerPlaylist(enlace.lista);
+    let canciones = (lista.videos || []).filter((v) => v.videoId).map(cancionDeVideo);
+    if (enlace.video) {
+      const desde = canciones.findIndex((c) => c.url.includes(enlace.video));
+      if (desde > 0) canciones = canciones.slice(desde);
+    }
+    if (!canciones.length) {
+      await reproducirVozPepe('Esa playlist está vacía o es privada, carnal.');
+      return;
+    }
+    logEvent(`📜 [Playlist]: "${lista.title}" con ${canciones.length} canciones`);
+    const canal = client.channels.cache.get(CANAL_MUSICA_ID) || canalTexto;
+    if (canal?.isTextBased()) {
+      await canal.send({ embeds: [new EmbedBuilder().setColor(0xED4245).setDescription(`📜 Playlist **${lista.title || 'de YouTube'}**: ${canciones.length} canciones en cola`)] }).catch(() => {});
+    }
+    detenerMusica();
+    colaMusica = canciones.slice(1);
+    avisarCancionEnCanal(canciones[0], canalTexto);
+    await reproducirCancion(canciones[0]);
+    return;
+  }
+  const v = await yts({ videoId: enlace.video });
+  const cancion = cancionDeVideo(v);
+  logEvent(`🔗 [Link directo]: "${cancion.title}" [${cancion.timestamp}]`);
+  colaMusica = [];
+  avisarCancionEnCanal(cancion, canalTexto);
+  await reproducirCancion(cancion);
+}
+
 async function buscarYDarOpciones(pedido, canalTexto = null) {
+  const enlace = leerEnlaceYouTube(pedido);
+  if (enlace) {
+    try {
+      await ponerEnlace(enlace, canalTexto);
+    } catch (err) {
+      logEvent(`❌ [Link de YouTube]: ${err.message}`);
+      await reproducirVozPepe('Ese link no lo pude abrir, carnal.');
+    }
+    return;
+  }
   try {
     const query = quitarPedido(pedido) || pedido;
     let decision = null;
@@ -1270,12 +1383,19 @@ async function reproducirCancion(videoInfo) {
     logEvent(`▶️ [Reproduciendo desde ${resultadoStream.sourceName}]: "${videoInfo.title}" al ${Math.round(volumenMusica * 100)}% de volumen`);
   } catch (err) {
     logEvent(`❌ Error reproduciendo audio: ${err.message}`);
+    if (colaMusica.length) {
+      // En una playlist, una que falla no para las demás.
+      const siguiente = colaMusica.shift();
+      logEvent(`⏭️ [Cola]: me salto "${videoInfo.title}", sigue "${siguiente.title}"`);
+      return reproducirCancion(siguiente);
+    }
     detenerMusica();
     await reproducirVozPepe('No encontré el audio de esa rola carnal, y no te voy a poner otra por ponerla.');
   }
 }
 
 function detenerMusica() {
+  colaMusica = [];
   cancionActual = null;
   recursoMusica = null;
   esperandoSeleccion = false;
@@ -1494,6 +1614,21 @@ function parseComandoVoz(texto) {
     if (sitio) return { type: 'ABRIR_SITIO', sitio };
   }
 
+  // «Pepe, siguiente» / «salta la canción»: la que sigue de la playlist
+  if (/\b(?:siguiente|salta(?:te|la)?|skip|la que sigue)\b/.test(t) && (cancionActual || colaMusica.length)) {
+    return { type: 'MUSICA_SIGUIENTE' };
+  }
+
+  // «Pepe pon/ponte/reproduce X» es música sin preguntarle a la IA, que a veces
+  // lo tomaba por plática («Pepe ponte Wi-Fi de Aribela», 8-nov-2026).
+  if (dicePepe && !/c[aá]mara|volumen|atenci[oó]n|cuidado|serio|las pilas|trucha/.test(t)) {
+    const m = t.match(/\b(?:pon|ponte|ponme|ponnos|ponle|reproduce|reproduceme|toca|tocate|suelta|sueltate|avientate|echate)\b\s+(.+)/);
+    const pedido = m ? quitarPedido(m[0]) : '';
+    if (pedido && (pedido.split(' ').length >= 2 || /\b(?:la de|rola|canci[oó]n|m[uú]sica)\b/.test(t))) {
+      return { type: 'MUSICA_BUSCAR', query: pedido };
+    }
+  }
+
   // Toda petición de buscar canciones o buscar en Google pasa por el cerebro de IA (GPT-4o-mini)
   // para que entienda el contexto real y nunca busque en YouTube cuando solo están platicando
   return { type: 'CHARLA' };
@@ -1624,6 +1759,23 @@ function configurarEscucha(connection) {
         if (cmd.type === 'CALLAR' && userId !== '310155296729202689') {
           voicePlayer.stop(true);
           silencioHasta = Date.now() + 60000;
+          return;
+        }
+
+        if (cmd.type === 'MUSICA_BUSCAR') {
+          logEvent(`🎯 [Pedido de música por voz]: "${cmd.query}"`);
+          const canalTexto = client.channels.cache.get(CANAL_MUSICA_ID) || client.guilds.cache.get(PREF_GUILD)?.channels.cache.get(CANAL_MUSICA_ID);
+          await buscarYDarOpciones(cmd.query, canalTexto);
+          return;
+        }
+
+        if (cmd.type === 'MUSICA_SIGUIENTE') {
+          if (!colaMusica.length) {
+            await reproducirVozPepe('Ya no hay más en la lista, carnal.');
+            return;
+          }
+          // Parar la actual dispara la siguiente de la cola (evento Idle).
+          try { musicPlayer.stop(true); } catch {}
           return;
         }
 
@@ -1835,7 +1987,7 @@ const COMANDOS = [
     .addSubcommand(sub =>
       sub.setName('buscar')
         .setDescription('Busca canciones en YouTube y da 3 opciones')
-        .addStringOption(opt => opt.setName('cancion').setDescription('Nombre de la canción o artista').setRequired(true))
+        .addStringOption(opt => opt.setName('cancion').setDescription('Nombre, artista o link de YouTube (video o playlist)').setRequired(true))
     )
     .addSubcommand(sub =>
       sub.setName('volumen')

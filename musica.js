@@ -32,8 +32,8 @@ const esta = (palabra, lista) => lista.some((otra) => distanciaUnaONinguna(palab
 export function quitarPedido(texto) {
   let q = (texto || '').toLowerCase()
     .replace(/[¿?¡!.,;:"'()[\]]/g, ' ')
-    .replace(/\b(?:waifi|wifi|güaifi|guaifi)\b/g, 'wifey')
-    .replace(/\b(?:aribela|arivela|aria bella|ariveya|aribella)\b/g, 'aria bela')
+    .replace(/\b(?:waifi|wifi|wi[\s-]fi|güaifi|guaifi)\b/g, 'wifey')
+    .replace(/\b(?:aribela|arivela|aria bella|ariveya|aribella|ariabela|ariabella)\b/g, 'aria bela')
     .replace(/\b(?:pilate|pilats|pirates)\b/g, 'pilates')
     .replace(/\s+/g, ' ')
     .trim();
