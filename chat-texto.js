@@ -200,7 +200,7 @@ export function iniciarChatTexto(client, h) {
     try {
       const contexto = await h.leerContexto(userId).catch(() => ({}));
       const previos = await historialDelCanal(mensaje);
-      const sistema = h.personaje + REGLAS_TEXTO + `\n\n${h.quienHabla(userId, nombre)}` + h.bloqueMemoria(contexto, nombre, previos.length >= 4);
+      const sistema = h.personaje + REGLAS_TEXTO + `\n\n${h.quienHabla(userId, nombre)} (Su ID de Discord es ${userId}.)` + h.bloqueMemoria(contexto, nombre, previos.length >= 4);
 
       let pedido = pregunta || '(no escribió nada, solo mandó esto)';
       if (textoCitado) pedido = `[Está respondiendo a este mensaje de ${citado.member?.displayName || citado.author.username}: "${textoCitado}"]\n${pedido}`;
