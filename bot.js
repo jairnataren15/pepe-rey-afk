@@ -19,6 +19,7 @@ import { ytmp3 } from '@vreden/youtube_scraper';
 import { asegurarYtDlp } from './install-ytdlp.js';
 import { tituloParaMenu, pidenCallar, quitarPedido, leerSeleccion, leerCancelacion, buscarEnDeezer, decidirCancion, pistaComoCancion, elegirVideo, coincideSoundCloud } from './musica.js';
 import { leerContexto, bloqueMemoria, recordar } from './memoria.js';
+import { iniciarChatTexto } from './chat-texto.js';
 
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -521,6 +522,32 @@ async function buscarYEnviarFoto(consulta) {
 
   logEvent(`📸 [Buscando foto para enviar a ${CANAL_MUSICA_ID}]: "${q}"`);
 
+  const imageUrls = await buscarUrlsDeFoto(q);
+  const chosenUrl = imageUrls[0];
+  const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || await client.channels.fetch(CANAL_MUSICA_ID).catch(() => null);
+
+  if (!chosenUrl || !targetCanal) {
+    return 'No encontré ninguna foto chida de eso carnal.';
+  }
+
+  try {
+    const embed = new EmbedBuilder()
+      .setColor(0x9b59b6)
+      .setTitle(`📸 Foto de: ${q}`)
+      .setImage(chosenUrl)
+      .setFooter({ text: 'Enviado por Pepe Rey Del Noxz 👑🗿' });
+
+    await targetCanal.send({ embeds: [embed] });
+    logEvent(`✅ [Foto enviada a ${CANAL_MUSICA_ID}]: ${chosenUrl}`);
+    return `Ahí les mandé la foto de ${q} al chat general perros, pa que se deleiten la pupila.`;
+  } catch (errSend) {
+    logEvent(`❌ Error enviando foto al canal: ${errSend.message}`);
+    return 'Encontré la foto pero Discord no me dejó subirla al canal wey.';
+  }
+}
+
+// Fotos reales de internet (Bing y, si no, DuckDuckGo). La usan la voz y el chat.
+async function buscarUrlsDeFoto(q) {
   let imageUrls = [];
 
   // 1. Bing Images API abierta con filtro de imágenes reales (evitar banners de texto o webs de stock)
@@ -560,27 +587,7 @@ async function buscarYEnviarFoto(consulta) {
     } catch (e) {}
   }
 
-  const chosenUrl = imageUrls[0];
-  const targetCanal = client.channels.cache.get(CANAL_MUSICA_ID) || await client.channels.fetch(CANAL_MUSICA_ID).catch(() => null);
-
-  if (!chosenUrl || !targetCanal) {
-    return 'No encontré ninguna foto chida de eso carnal.';
-  }
-
-  try {
-    const embed = new EmbedBuilder()
-      .setColor(0x9b59b6)
-      .setTitle(`📸 Foto de: ${q}`)
-      .setImage(chosenUrl)
-      .setFooter({ text: 'Enviado por Pepe Rey Del Noxz 👑🗿' });
-
-    await targetCanal.send({ embeds: [embed] });
-    logEvent(`✅ [Foto enviada a ${CANAL_MUSICA_ID}]: ${chosenUrl}`);
-    return `Ahí les mandé la foto de ${q} al chat general perros, pa que se deleiten la pupila.`;
-  } catch (errSend) {
-    logEvent(`❌ Error enviando foto al canal: ${errSend.message}`);
-    return 'Encontré la foto pero Discord no me dejó subirla al canal wey.';
-  }
+  return imageUrls;
 }
 
 function detectaInsulto(texto) {
@@ -1987,11 +1994,28 @@ async function conectarCanal(channel) {
 // ───────────────────────────────────────────────────────────────
 // 10. CLIENTE DISCORD & COMANDOS
 // ───────────────────────────────────────────────────────────────
+// GuildMessages: para ver cuando etiquetan a Pepe en el chat (chat-texto.js).
+// MessageContent es un permiso especial: solo con PEPE_LEE_CHAT=1 y después de
+// activarlo en el portal de Discord, si no Pepe no puede conectarse.
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    ...(process.env.PEPE_LEE_CHAT?.trim() === '1' ? [GatewayIntentBits.MessageContent] : [])
   ]
+});
+
+iniciarChatTexto(client, {
+  personaje: SYSTEM_PROMPT.split('REGLA DE MÚSICA')[0]
+    .replace('Estás en canal de voz en Discord cotorreando con tus compas mientras juegan.', 'Cotorreas con tus compas en el Discord de la legión mientras juegan.'),
+  quienHabla,
+  leerContexto,
+  bloqueMemoria,
+  recordar,
+  preguntarIA: llamarChatCompletion,
+  buscarUrlsDeFoto,
+  logEvent
 });
 
 const COMANDOS = [
