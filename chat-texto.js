@@ -200,7 +200,8 @@ export function iniciarChatTexto(client, h) {
     try {
       const contexto = await h.leerContexto(userId).catch(() => ({}));
       const previos = await historialDelCanal(mensaje);
-      const sistema = h.personaje + REGLAS_TEXTO + `\n\n${h.quienHabla(userId, nombre)} (Su ID de Discord es ${userId}.)` + h.bloqueMemoria(contexto, nombre, previos.length >= 4);
+      const etiquetas = (h.consentidas || []).map((id) => `<@${id}>`).join(' y ');
+      const sistema = h.personaje + REGLAS_TEXTO + (etiquetas ? `\n\nTUS CONSENTIDAS EN DISCORD: ${etiquetas}. Si te preguntan quiénes son tus consentidas, etiquétalas escribiendo exactamente eso (${etiquetas}) y presúmelas con mucho cariño. No las etiquetes si no viene al caso.` : '') + `\n\n${h.quienHabla(userId, nombre)} (Su ID de Discord es ${userId}.)` + h.bloqueMemoria(contexto, nombre, previos.length >= 4);
 
       let pedido = pregunta || '(no escribió nada, solo mandó esto)';
       if (textoCitado) pedido = `[Está respondiendo a este mensaje de ${citado.member?.displayName || citado.author.username}: "${textoCitado}"]\n${pedido}`;
@@ -284,11 +285,11 @@ export function iniciarChatTexto(client, h) {
       const trozos = partir(texto || '👍');
       for (let i = 0; i < trozos.length; i++) {
         const ultimo = i === trozos.length - 1;
-        const envio = { content: trozos[i], allowedMentions: { parse: [], repliedUser: true } };
+        const envio = { content: trozos[i], allowedMentions: { parse: [], users: h.consentidas || [], repliedUser: true } };
         if (ultimo && archivos.length) envio.files = archivos;
         if (ultimo && embedFoto) envio.embeds = [embedFoto];
         if (i === 0) await mensaje.reply(envio);
-        else await mensaje.channel.send({ ...envio, allowedMentions: { parse: [] } });
+        else await mensaje.channel.send({ ...envio, allowedMentions: { parse: [], users: h.consentidas || [] } });
       }
 
       log(`💬 [Chat ${proveedor} ${Date.now() - t0} ms] ${nombre}: "${pregunta.slice(0, 80)}"${imagenes.length ? ` +${imagenes.length} img` : ''} → "${texto.slice(0, 100).replace(/\n/g, ' ')}"`);
