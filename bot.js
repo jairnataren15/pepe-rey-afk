@@ -32,7 +32,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ActivityType
+  ActivityType,
+  PermissionFlagsBits,
+  ChannelType
 } from 'discord.js';
 import {
   joinVoiceChannel,
@@ -2054,7 +2056,16 @@ const COMANDOS = [
     .setDescription('Mueve y fija a Pepe Rey en tu canal de voz actual 24/7'),
   new SlashCommandBuilder()
     .setName('estado')
-    .setDescription('Muestra el estado, racha y modo de charla de Pepe Rey')
+    .setDescription('Muestra el estado, racha y modo de charla de Pepe Rey'),
+  // Que Pepe publique un mensaje tal cual (con imagen si se quiere). Solo
+  // administradores: Discord ni se lo enseña a los demás.
+  new SlashCommandBuilder()
+    .setName('anunciar')
+    .setDescription('Pepe publica tu mensaje tal cual en un canal (solo admins)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addChannelOption(opt => opt.setName('canal').setDescription('Dónde lo publica').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+    .addStringOption(opt => opt.setName('texto').setDescription('El mensaje, tal cual').setRequired(true).setMaxLength(2000))
+    .addAttachmentOption(opt => opt.setName('imagen').setDescription('Una imagen para mandar con el mensaje').setRequired(false))
 ];
 
 client.once('ready', async () => {
@@ -2233,6 +2244,30 @@ client.on('interactionCreate', async (interaction) => {
     const msgVoz = await buscarYEnviarFoto(busqueda);
     if (msgVoz) await reproducirVozPepe(msgVoz);
     return interaction.editReply({ content: `📸 Listo carnal, foto de **"${busqueda}"** enviada al canal <#${CANAL_MUSICA_ID}>.` });
+  }
+
+  if (interaction.commandName === 'anunciar') {
+    // Por si acaso: también se comprueba aquí, no solo en Discord.
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: 'Solo los administradores pueden usar esto, carnal.', ephemeral: true });
+    }
+    const canal = interaction.options.getChannel('canal');
+    const texto = interaction.options.getString('texto');
+    const imagen = interaction.options.getAttachment('imagen');
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const destino = await client.channels.fetch(canal.id);
+      await destino.send({
+        content: texto,
+        files: imagen ? [{ attachment: imagen.url, name: imagen.name }] : [],
+        allowedMentions: { parse: [] },
+      });
+      logEvent(`📢 [Anuncio] ${interaction.user.username} publicó en #${destino.name}: "${texto.slice(0, 80)}"${imagen ? ' + ' + imagen.name : ''}`);
+      return interaction.editReply({ content: `📢 Publicado en <#${destino.id}>.` });
+    } catch (err) {
+      logEvent(`⚠️ [Anuncio]: ${err.message}`);
+      return interaction.editReply({ content: `No pude publicarlo: ${err.message}` });
+    }
   }
 
   if (interaction.commandName === 'quedarse' || interaction.commandName === 'fijar') {
