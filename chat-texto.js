@@ -37,19 +37,21 @@ function elegir(lista, patron) {
     const pb = /preview|exp/.test(b.name) ? 1 : 0;
     return pa - pb || versionDe(b.name) - versionDe(a.name);
   });
-  return sirven[0]?.name.replace(/^models\//, '');
+  return sirven.map((m) => m.name.replace(/^models\//, ''));
 }
 async function dameModelos(log) {
   if (modelos) return modelos;
-  let texto = process.env.GEMINI_MODELO?.trim();
+  const fijo = process.env.GEMINI_MODELO?.trim();
+  let textos = fijo ? [fijo] : [];
   let imagen = process.env.GEMINI_MODELO_IMAGEN?.trim();
-  if (!texto || !imagen) {
+  if (!fijo || !imagen) {
     try {
       const r = await fetch(`${API}/models?pageSize=1000`, { headers: { 'x-goog-api-key': clave() }, signal: AbortSignal.timeout(8000) });
       if (r.ok) {
         const lista = (await r.json()).models || [];
-        texto ||= elegir(lista, /^models\/gemini-\d+(?:\.\d+)?-flash(?:-preview(?:-[\d-]+)?)?$/);
-        imagen ||= elegir(lista, /^models\/gemini-\d+(?:\.\d+)?-flash-image(?:-preview(?:-[\d-]+)?)?$/);
+        // Si uno no tiene cupo se prueba el siguiente; los lite van al final.
+        if (!fijo) textos = [...elegir(lista, /^models\/gemini-\d+(?:\.\d+)?-flash(?:-preview(?:-[\d-]+)?)?$/), ...elegir(lista, /^models\/gemini-\d+(?:\.\d+)?-flash-lite(?:-preview(?:-[\d-]+)?)?$/)].slice(0, 4);
+        imagen ||= elegir(lista, /^models\/gemini-\d+(?:\.\d+)?-flash-image(?:-preview(?:-[\d-]+)?)?$/)[0];
       } else {
         log(`⚠️ [Chat] Gemini no dio la lista de modelos: ${r.status}`);
       }
@@ -57,8 +59,8 @@ async function dameModelos(log) {
       log(`⚠️ [Chat] Gemini no dio la lista de modelos: ${e.message}`);
     }
   }
-  modelos = { texto: texto || 'gemini-2.5-flash', imagen: imagen || 'gemini-2.5-flash-image' };
-  log(`🤖 [Chat] Modelos de Gemini: ${modelos.texto} · ${modelos.imagen}`);
+  modelos = { textos: textos.length ? textos : ['gemini-2.5-flash'], imagen: imagen || 'gemini-2.5-flash-image' };
+  log(`🤖 [Chat] Modelos de Gemini: ${modelos.textos.join(', ')} · ${modelos.imagen}`);
   return modelos;
 }
 
@@ -70,7 +72,10 @@ async function gemini(modelo, cuerpo, ms = 60000) {
     signal: AbortSignal.timeout(ms),
   });
   if (!r.ok) {
-    const e = new Error(`Gemini ${r.status}: ${(await r.text()).slice(0, 300)}`);
+    const crudo = await r.text();
+    let motivo = crudo;
+    try { motivo = JSON.parse(crudo).error?.message || crudo; } catch {}
+    const e = new Error(`Gemini ${modelo} ${r.status}: ${motivo.replace(/\s+/g, ' ').slice(0, 400)}`);
     e.status = r.status;
     throw e;
   }
@@ -220,8 +225,8 @@ export function iniciarChatTexto(client, h) {
         else contents.push({ role: 'user', parts: [actual, ...imagenes] });
         if (contents[0]?.role === 'model') contents.unshift({ role: 'user', parts: [{ text: '(plática anterior del canal)' }] });
 
-        const { texto: modelo } = await dameModelos(log);
-        try {
+        const { textos: candidatos } = await dameModelos(log);
+        for (const modelo of candidatos) try {
           const d = await gemini(modelo, {
             system_instruction: { parts: [{ text: sistema }] },
             contents,
@@ -232,14 +237,16 @@ export function iniciarChatTexto(client, h) {
           texto = (cand?.content?.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('').trim();
           fuentes = (cand?.groundingMetadata?.groundingChunks || []).map((c) => c.web).filter((w) => w?.uri).slice(0, 3);
           if (!texto && cand?.finishReason) log(`⚠️ [Chat] Gemini sin texto: ${cand.finishReason}`);
+          proveedor = `Gemini ${modelo}`;
+          break;
         } catch (e) {
           log(`⚠️ [Chat] ${e.message}`);
-          if (e.status === 429) proveedor = 'saturado';
+          if (e.status !== 429 && e.status !== 404 && e.status !== 503) break;
         }
       }
 
       // Sin Gemini (o si falló): la IA de la voz, solo texto.
-      if (!texto && proveedor !== 'saturado') {
+      if (!texto) {
         proveedor = 'respaldo';
         const r = await h.preguntarIA([
           { role: 'system', content: sistema + (imagenes.length ? '\n(Te mandaron imágenes pero ahorita no las puedes ver; dilo con carrilla.)' : '') },
@@ -248,9 +255,7 @@ export function iniciarChatTexto(client, h) {
         ]);
         texto = r?.text || '';
       }
-      if (!texto) texto = proveedor === 'saturado'
-        ? 'Ando saturado de mensajes, aguántame tantito y vuelve a etiquetarme.'
-        : 'Se me trabó el cerebro con tanta chela, repíteme eso.';
+      if (!texto) texto = 'Ando saturado de mensajes, aguántame tantito y vuelve a etiquetarme.';
 
       // ¿Pidió imagen?
       const archivos = [];
